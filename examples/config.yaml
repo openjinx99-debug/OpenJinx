@@ -1,0 +1,113 @@
+# Jinx Configuration
+# Copy to ~/.jinx/config.yaml and customize.
+# All fields have sensible defaults — an empty file works out of the box.
+
+# LLM settings
+llm:
+  # Auth: "oauth" reads from macOS Keychain (requires Claude Code logged in),
+  # "api_key" uses ANTHROPIC_API_KEY env var.
+  # authMode: oauth
+
+  # Model tiers
+  brain: sonnet # Primary model: opus | sonnet | haiku
+  subagent: sonnet # Sub-agent model
+  light: haiku # Lightweight tasks (heartbeat, cron)
+
+  # Safety limits
+  maxBudgetUsd: 0 # 0 = unlimited
+  maxTurns: 30 # Max agent turns per request
+
+# Agent definitions
+agents:
+  default: default
+  list:
+    - id: default
+      name: Jinx
+      workspace: ~/.jinx/workspace
+
+# Channel adapters
+channels:
+  terminal:
+    enabled: true
+
+  telegram:
+    enabled: false
+    # botToken: "123456:ABC-DEF"    # From @BotFather
+    # streaming: true               # Edit messages as they stream
+    # mode: polling                 # "polling" or "webhook"
+    # webhookUrl: "https://your-domain.com/telegram/webhook"
+    # secretToken: "your-secret"    # Verify webhook requests
+    # allowedChatIds:               # Restrict to specific chats
+    #   - 123456789
+    # dmPolicy: allow               # "allow" or "deny"
+    # groupPolicy: deny             # "allow" or "deny"
+
+  whatsapp:
+    enabled: false
+    # dmPolicy: allow
+    # groupPolicy: deny
+
+# Skills
+skills:
+  dirs:
+    - ~/.jinx/skills # User skills
+    - ./skills # Bundled skills
+  exclude: []
+
+# Memory search
+memory:
+  enabled: true
+  dir: ~/.jinx/memory
+  # embeddingModel: text-embedding-3-small   # Requires OPENAI_API_KEY
+  # vectorWeight: 0.7                        # Blend weight (0=BM25 only, 1=vector only)
+  maxResults: 10
+
+# Heartbeat (autonomous check-ins)
+heartbeat:
+  enabled: true
+  defaultIntervalMinutes: 15
+  visibility:
+    showOk: false # Show "all ok" heartbeats
+    showAlerts: true # Show actionable alerts
+
+# Cron scheduler
+cron:
+  enabled: true
+  maxJobs: 50
+
+# Gateway server
+gateway:
+  host: 127.0.0.1
+  port: 18790 # WebSocket port
+  # authToken: "your-ws-auth-token"
+
+  # HTTP server (webhooks, health check)
+  http:
+    enabled: false
+    port: 18791
+    hooks:
+      enabled: false
+      # authToken: "your-hook-secret"
+
+# Web search (via Perplexity Sonar on OpenRouter)
+webSearch:
+  enabled: true
+  # model: perplexity/sonar-pro   # Requires OPENROUTER_API_KEY
+  timeoutSeconds: 30
+  cacheTtlMinutes: 15
+
+# Composio integration (third-party tool orchestration)
+composio:
+  enabled: false
+  # Requires COMPOSIO_API_KEY env var
+
+# Container sandbox (for code execution tools)
+sandbox:
+  enabled: true
+  timeoutMs: 300000 # 5 minutes
+  idleTimeoutMs: 900000 # 15 minutes idle before cleanup
+  # image: node:22-slim
+
+# Logging
+logging:
+  level: info # debug | info | warn | error

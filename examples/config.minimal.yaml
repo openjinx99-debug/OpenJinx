@@ -1,0 +1,9 @@
+# Minimal Jinx config — terminal only, OAuth auth via macOS Keychain.
+# Copy to ~/.jinx/config.yaml
+
+llm:
+  brain: sonnet
+
+channels:
+  terminal:
+    enabled: true
