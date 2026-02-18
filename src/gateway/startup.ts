@@ -34,6 +34,7 @@ import { resolveTranscriptPath } from "../sessions/transcript.js";
 import { startSkillRefresh } from "../skills/refresh.js";
 import { ensureWorkspace } from "../workspace/bootstrap.js";
 import { resolveTasksRoot } from "../workspace/task-dir.js";
+import { handleMarathonWatchdogJob } from "./marathon-watchdog.js";
 import { createHttpServer } from "./server-http.js";
 import { createGatewayServer } from "./server.js";
 
@@ -266,50 +267,24 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
       const agentId = job.target.agentId || config.agents.default;
       const ts = Date.now();
 
-      // Marathon watchdog: check if executor is still alive and resume if needed
-      if (job.payload.marathonWatchdog) {
-        const { taskId } = job.payload.marathonWatchdog;
-        if (!isExecutorAlive(taskId)) {
-          const checkpoint = await readCheckpoint(taskId);
-          if (!checkpoint) {
-            const removed = cron.remove(job.id);
-            logger.info(
-              `Marathon watchdog: removed stale job=${job.id} task=${taskId} (checkpoint missing, removed=${removed})`,
-            );
-            return "watchdog stale removed";
-          }
-
-          if (checkpoint.status !== "paused" && checkpoint.status !== "executing") {
-            const removed = cron.remove(job.id);
-            logger.info(
-              `Marathon watchdog: removed stale job=${job.id} task=${taskId} status=${checkpoint.status} (removed=${removed})`,
-            );
-            return "watchdog stale removed";
-          }
-
-          logger.info(`Marathon watchdog: executor dead for task=${taskId}, resuming...`);
-          try {
-            await resumeMarathon(taskId, {
-              config,
-              sessions,
-              cronService: cron,
-              channels,
-              containerManager,
-              searchManager,
-            });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes("Marathon not found")) {
-              const removed = cron.remove(job.id);
-              logger.warn(
-                `Marathon watchdog resume failed for ${taskId}: ${msg} (stale job removed=${removed})`,
-              );
-              return "watchdog stale removed";
-            }
-            logger.warn(`Marathon watchdog resume failed for ${taskId}: ${msg}`);
-          }
-        }
-        return "watchdog ok";
+      const watchdogResult = await handleMarathonWatchdogJob(job, {
+        isExecutorAlive,
+        removeJob: (jobId) => cron.remove(jobId),
+        readCheckpoint,
+        resume: async (taskId) => {
+          await resumeMarathon(taskId, {
+            config,
+            sessions,
+            cronService: cron,
+            channels,
+            containerManager,
+            searchManager,
+          });
+        },
+        logger,
+      });
+      if (watchdogResult) {
+        return watchdogResult;
       }
 
       if (job.payload.isolated) {

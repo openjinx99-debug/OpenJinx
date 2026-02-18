@@ -11,10 +11,9 @@ import type {
   DeliveryTarget,
   InputFileInfo,
   ChunkDefinition,
-  MarathonControlPolicy,
 } from "../types/marathon.js";
 import type { ChunkResult, MarathonCheckpoint } from "../types/marathon.js";
-import type { MediaAttachment, OutboundMedia } from "../types/messages.js";
+import type { MediaAttachment } from "../types/messages.js";
 import type { SessionStore } from "../types/sessions.js";
 import { runAgent } from "../agents/runner.js";
 import { getCoreToolDefinitions } from "../agents/tools/core-tools.js";
@@ -22,7 +21,6 @@ import { getExecToolDefinitions } from "../agents/tools/exec-tools.js";
 import { getMarathonToolDefinitions } from "../agents/tools/marathon-tools.js";
 import { getWebFetchToolDefinitions } from "../agents/tools/web-fetch-tools.js";
 import { getWebSearchToolDefinitions } from "../agents/tools/web-search-tools.js";
-import { deliverWithRetryAndFallback } from "../delivery/reliable.js";
 import { createLogger } from "../infra/logger.js";
 import { logProductTelemetry } from "../infra/product-telemetry.js";
 import { SECURE_DIR_MODE } from "../infra/security.js";
@@ -40,7 +38,6 @@ import {
   patchCheckpoint,
   resetCurrentChunkRetries,
   listCheckpoints,
-  resolveMarathonDir,
   resolveMarathonWorkspace,
 } from "./checkpoint.js";
 import {
@@ -48,6 +45,9 @@ import {
   listFilesRecursive,
   writeProgressFile,
 } from "./marathon-context.js";
+import { packageDeliverables } from "./marathon-artifacts.js";
+import { buildControlPolicy } from "./marathon-control.js";
+import { deliverMarathonPayload, sendMarathonProgressUpdate } from "./marathon-delivery.js";
 import {
   buildPlanningPrompt,
   buildPlanningRepairPrompt,
@@ -55,7 +55,6 @@ import {
   buildCriteriaRetryPrompt,
   parsePlanFromResult,
   formatFileSize,
-  DELIVERABLES_MANIFEST,
 } from "./marathon-prompts.js";
 import { runTestFixLoop, verifyAcceptanceCriteria } from "./marathon-test-loop.js";
 import { emitStreamEvent } from "./streaming.js";
@@ -67,11 +66,6 @@ const CHUNK_TIMEOUT_MS = 60 * 60_000;
 
 /** Planning turn timeout — 5 min (planning is lighter than execution). */
 const PLANNING_TIMEOUT_MS = 15 * 60_000;
-
-/** Delivery retry settings for marathon progress/final payloads. */
-const DELIVERY_MAX_ATTEMPTS = 3;
-const DELIVERY_RETRY_BASE_MS = 1;
-const DELIVERY_RETRY_MAX_MS = 5;
 
 /** Track active marathon executor loops. */
 const activeExecutors = new Map<string, { abortController: AbortController }>();
@@ -124,47 +118,6 @@ function assertValidChunkDefinition(
       `Marathon ${taskId} plan invalid at chunk "${chunk.name}": acceptanceCriteria must be an array`,
     );
   }
-}
-
-function extractGroupIdFromSessionKey(sessionKey: string): string | undefined {
-  const parts = sessionKey.split(":");
-  if (parts.length >= 3 && parts[1] === "group" && parts[2]) {
-    return parts[2];
-  }
-  return undefined;
-}
-
-function getChannelAllowlist(channel: string, config: JinxConfig): string[] {
-  switch (channel) {
-    case "terminal":
-      return config.channels.terminal.allowFrom ?? [];
-    case "telegram":
-      return config.channels.telegram.allowFrom ?? [];
-    case "whatsapp":
-      return config.channels.whatsapp.allowFrom ?? [];
-    default:
-      return [];
-  }
-}
-
-function buildControlPolicy(params: LaunchMarathonParams, config: JinxConfig): MarathonControlPolicy {
-  const originGroupId = params.groupId ?? extractGroupIdFromSessionKey(params.originSessionKey);
-  const allowedSenderIds = new Set<string>();
-  if (params.senderId) {
-    allowedSenderIds.add(params.senderId);
-  }
-  for (const senderId of config.marathon.control.allowFrom) {
-    allowedSenderIds.add(senderId);
-  }
-  for (const senderId of getChannelAllowlist(params.channel, config)) {
-    allowedSenderIds.add(senderId);
-  }
-  return {
-    ownerSenderId: params.senderId,
-    originGroupId,
-    allowedSenderIds: [...allowedSenderIds],
-    allowSameGroupMembers: Boolean(originGroupId && config.marathon.control.allowSameGroupMembers),
-  };
 }
 
 /**
@@ -715,7 +668,7 @@ async function runChunkLoop(
 
         // Send progress update
         if ((chunkIndex + 1) % marathonConfig.progress.notifyEveryNChunks === 0) {
-          await sendProgressUpdate(updated, deps);
+          await sendMarathonProgressUpdate(updated, deps, emitMarathonTelemetry);
         }
 
         // Check if completed
@@ -839,9 +792,16 @@ async function onMarathonComplete(
       "\nNote: Some attached artifacts look like source/workspace files and may require local build/run steps.";
   }
 
-  await deliverPayload(text, deliverableMedia, checkpoint.deliverTo, deps, {
-    taskId,
-    reason: "completion",
+  await deliverMarathonPayload({
+    text,
+    media: deliverableMedia,
+    target: checkpoint.deliverTo,
+    deps,
+    emitTelemetry: emitMarathonTelemetry,
+    context: {
+      taskId,
+      reason: "completion",
+    },
   });
 
   // Keep container alive for post-completion inspection
@@ -1093,179 +1053,7 @@ function assembleChunkTools(
   return tools;
 }
 
-// ── Deliverables Packaging ──────────────────────────────────────────
-
-async function readDeliverables(workspaceDir: string): Promise<string[] | undefined> {
-  try {
-    const manifestPath = path.join(workspaceDir, DELIVERABLES_MANIFEST);
-    const raw = await fs.readFile(manifestPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return undefined;
-    }
-
-    const resolved: string[] = [];
-    for (const entry of parsed) {
-      if (typeof entry !== "string") {
-        continue;
-      }
-      const cleaned = entry.replace(/^\/workspace\//, "");
-      if (!isManifestDeliverablePath(cleaned)) {
-        logger.warn(`Deliverable manifest entry rejected as non-deliverable: ${entry}`);
-        continue;
-      }
-      const full = path.join(workspaceDir, cleaned);
-
-      if (!full.startsWith(workspaceDir)) {
-        logger.warn(`Deliverable path escapes workspace, skipping: ${entry}`);
-        continue;
-      }
-
-      try {
-        await fs.access(full);
-        resolved.push(full);
-      } catch {
-        logger.warn(`Deliverable not found, skipping: ${entry}`);
-      }
-    }
-
-    return resolved.length > 0 ? resolved : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function packageDeliverables(
-  workspaceDir: string,
-  taskId: string,
-  inputFiles?: InputFileInfo[],
-): Promise<OutboundMedia[]> {
-  const manifestPaths = await readDeliverables(workspaceDir);
-  if (manifestPaths) {
-    const zip = await packageFilesAsZip(workspaceDir, taskId, manifestPaths);
-    if (zip) {
-      logger.info(`Using .deliverables manifest: ${manifestPaths.length} file(s) for task=${taskId}`);
-      return [zip];
-    }
-    logger.warn("Failed to package .deliverables entries as ZIP, trying auto-detect");
-  }
-
-  const detected = await autoDetectDeliverables(workspaceDir, inputFiles);
-  if (detected.length > 0) {
-    const zip = await packageFilesAsZip(workspaceDir, taskId, detected);
-    if (zip) {
-      logger.info(`Auto-detected ${detected.length} deliverable(s) for task=${taskId}`);
-      return [zip];
-    }
-    logger.warn("Failed to package auto-detected deliverables as ZIP");
-  }
-
-  logger.info(`No deliverables detected for task=${taskId}; completion will have no attachments`);
-  return [];
-}
-
-const DELIVERABLE_EXTENSIONS = new Set([
-  "mp4",
-  "mov",
-  "webm",
-  "mkv",
-  "avi",
-  "jpg",
-  "jpeg",
-  "png",
-  "gif",
-  "webp",
-  "svg",
-  "bmp",
-  "tiff",
-  "mp3",
-  "ogg",
-  "wav",
-  "flac",
-  "m4a",
-  "aac",
-  "pdf",
-  "docx",
-  "xlsx",
-  "pptx",
-  "csv",
-  "zip",
-  "tar",
-  "gz",
-  "tgz",
-]);
-
-const NOISE_PATTERNS = [
-  /^CHUNK\d/i,
-  /^SETUP_COMPLETE/i,
-  /^\.deliverables$/,
-  /^\.gitignore$/,
-  /^\.DS_Store$/,
-  /^package\.json$/,
-  /^package-lock\.json$/,
-  /^yarn\.lock$/,
-  /^pnpm-lock\.yaml$/,
-  /^requirements\.txt$/,
-  /^Makefile$/i,
-  /^Dockerfile$/i,
-  /^\.dockerignore$/,
-  /^tsconfig\.json$/,
-  /^pyproject\.toml$/,
-  /^setup\.(py|cfg)$/,
-  /^PROGRESS\.md$/,
-];
-
-/** @internal Exported for testing. */
-export async function autoDetectDeliverables(
-  workspaceDir: string,
-  inputFiles?: InputFileInfo[],
-): Promise<string[]> {
-  const inputNames = new Set((inputFiles ?? []).map((f) => f.name));
-  const allFiles = await listFilesRecursive(workspaceDir);
-
-  const candidates: { path: string; ext: string; size: number }[] = [];
-
-  for (const relativePath of allFiles) {
-    const filename = path.basename(relativePath);
-    if (inputNames.has(filename)) {
-      continue;
-    }
-    if (NOISE_PATTERNS.some((re) => re.test(filename))) {
-      continue;
-    }
-
-    const ext = path.extname(filename).toLowerCase().slice(1);
-    const fullPath = path.join(workspaceDir, relativePath);
-
-    try {
-      const stat = await fs.stat(fullPath);
-      candidates.push({ path: fullPath, ext, size: stat.size });
-    } catch {
-      continue;
-    }
-  }
-
-  const deliverableFiles = candidates.filter((c) => DELIVERABLE_EXTENSIONS.has(c.ext));
-
-  if (deliverableFiles.length > 0) {
-    deliverableFiles.sort((a, b) => b.size - a.size);
-    const selected = deliverableFiles.slice(0, 5);
-    logger.info(
-      `Auto-detect found ${deliverableFiles.length} deliverable file(s), selecting ${selected.length}`,
-    );
-    return selected.map((f) => f.path);
-  }
-
-  return [];
-}
-
-const MANIFEST_EXCLUDED_BASENAMES = new Set([
-  "readme.md",
-  "progress.md",
-  "license",
-  "license.md",
-  "changelog.md",
-]);
+// ── Deliverables Metadata ──────────────────────────────────────────
 
 const SOURCE_LIKE_DELIVERABLE_EXTENSIONS = new Set([
   "js",
@@ -1292,196 +1080,19 @@ const SOURCE_LIKE_DELIVERABLE_EXTENSIONS = new Set([
   "zsh",
 ]);
 
-const PROGRESS_SUMMARY_EXTENSIONS = new Set([
-  ...DELIVERABLE_EXTENSIONS,
-  "html",
-  "htm",
-]);
-
-/** @internal Exported for testing. */
-export function isManifestDeliverablePath(relativePath: string): boolean {
-  const normalized = relativePath.replace(/^\/+/, "").replace(/\\/g, "/");
-  if (!normalized) {
-    return false;
-  }
-  const filename = path.basename(normalized).toLowerCase();
-  if (MANIFEST_EXCLUDED_BASENAMES.has(filename)) {
-    return false;
-  }
-  if (NOISE_PATTERNS.some((re) => re.test(path.basename(normalized)))) {
-    return false;
-  }
-  return true;
-}
-
-/** @internal Exported for testing. */
-export function selectProgressArtifacts(filesWritten: string[]): string[] {
-  const selected = new Set<string>();
-  for (const file of filesWritten) {
-    if (selected.size >= 5) {
-      break;
-    }
-    if (!isManifestDeliverablePath(file)) {
-      continue;
-    }
-    const ext = path.extname(file).toLowerCase().slice(1);
-    if (!PROGRESS_SUMMARY_EXTENSIONS.has(ext)) {
-      continue;
-    }
-    selected.add(file);
-  }
-  return [...selected];
-}
-
-async function packageFilesAsZip(
-  workspaceDir: string,
-  taskId: string,
-  filePaths: string[],
-): Promise<OutboundMedia | undefined> {
-  const relativePaths = [...new Set(filePaths.map((p) => path.relative(workspaceDir, p)))]
-    .map((p) => p.replace(/\\/g, "/"))
-    .filter((p) => p.length > 0 && !p.startsWith("..") && !path.isAbsolute(p));
-
-  if (relativePaths.length === 0) {
-    return undefined;
-  }
-
-  try {
-    const { execFileSync } = await import("node:child_process");
-    const zipFilename = `${taskId}-artifacts.zip`;
-    const zipPath = path.join(path.dirname(workspaceDir), zipFilename);
-    execFileSync("zip", ["-r", zipPath, ...relativePaths], {
-      cwd: workspaceDir,
-      timeout: 60_000,
-      stdio: "ignore",
-    });
-    const buffer = await fs.readFile(zipPath);
-    await fs.unlink(zipPath).catch(() => {});
-    return {
-      type: "document",
-      mimeType: "application/zip",
-      buffer: new Uint8Array(buffer),
-      filename: zipFilename,
-    };
-  } catch (err) {
-    logger.warn(`Failed to package selected artifacts as ZIP: ${err}`);
-    return undefined;
-  }
-}
-
-// ── Delivery Helpers ────────────────────────────────────────────────
-
-interface DeliveryContext {
-  taskId?: string;
-  reason?: string;
-}
-
 async function deliverText(
   text: string,
   target: DeliveryTarget,
   deps: MarathonDeps,
-  context?: DeliveryContext,
+  context?: { taskId?: string; reason?: string },
 ): Promise<void> {
-  await deliverPayload(text, [], target, deps, context);
-}
-
-async function deliverPayload(
-  text: string,
-  media: OutboundMedia[],
-  target: DeliveryTarget,
-  deps: MarathonDeps,
-  context?: DeliveryContext,
-): Promise<void> {
-  const reason = context?.reason ?? "unspecified";
-  const payload = { text, media: media.length > 0 ? media : undefined };
-  const deadLetterPath = path.join(resolveMarathonDir(), "dead-letter.jsonl");
-
-  const result = await deliverWithRetryAndFallback({
-    payload,
+  await deliverMarathonPayload({
+    text,
+    media: [],
     target,
-    deps: {
-      getChannel: (name) => deps.channels?.get(name),
-    },
-    source: "marathon",
-    reason,
-    taskId: context?.taskId,
-    maxAttempts: DELIVERY_MAX_ATTEMPTS,
-    retryBaseMs: DELIVERY_RETRY_BASE_MS,
-    retryMaxMs: DELIVERY_RETRY_MAX_MS,
-    deadLetterPath,
-    terminalText: text,
-    emitFallback: (sessionKey, fallbackText) => {
-      emitStreamEvent(sessionKey, { type: "final", text: fallbackText });
-    },
-    onAttemptFailed: (metadata) => {
-      emitMarathonTelemetry("marathon_delivery_attempt_failed", {
-        taskId: context?.taskId,
-        channel: target.channel,
-        reason,
-        attempt: metadata.attempt,
-        maxAttempts: metadata.maxAttempts,
-        error: metadata.error,
-      });
-    },
-    onSucceeded: (metadata) => {
-      emitMarathonTelemetry("marathon_delivery_succeeded", {
-        taskId: context?.taskId,
-        channel: target.channel,
-        attempts: metadata.attempts,
-        reason,
-        textChunks: metadata.textChunks,
-        mediaItems: metadata.mediaItems,
-      });
-    },
-    onFallback: (metadata) => {
-      emitMarathonTelemetry("marathon_delivery_fallback_terminal", {
-        taskId: context?.taskId,
-        channel: target.channel,
-        reason,
-        error: metadata.error,
-        deadLetterPath: metadata.deadLetterPath,
-      });
-    },
-  });
-
-  if (!result.success) {
-    logger.warn(
-      `Marathon delivery failed after ${result.attempts} attempts: ${result.error ?? "unknown error"}`,
-    );
-  }
-}
-
-async function sendProgressUpdate(
-  checkpoint: MarathonCheckpoint,
-  deps: MarathonDeps,
-): Promise<void> {
-  const total = checkpoint.plan.chunks.length;
-  const done = checkpoint.currentChunkIndex;
-  const lastChunk = checkpoint.completedChunks[checkpoint.completedChunks.length - 1];
-  const progressPct = Math.round((done / total) * 100);
-
-  let text = `Marathon \`${checkpoint.taskId}\` progress: ${done}/${total} chunks (${progressPct}%)`;
-  if (lastChunk) {
-    text += `\nLast completed: **${lastChunk.chunkName}**`;
-    if (deps.config.marathon.progress.includeFileSummary && lastChunk.filesWritten.length > 0) {
-      const likelyOutputs = selectProgressArtifacts(lastChunk.filesWritten);
-      if (likelyOutputs.length > 0) {
-        text += `\nLikely outputs: ${likelyOutputs.join(", ")}`;
-      } else {
-        text += `\nWorkspace updated (${lastChunk.filesWritten.length} files tracked).`;
-      }
-    }
-  }
-
-  await deliverText(text, checkpoint.deliverTo, deps, {
-    taskId: checkpoint.taskId,
-    reason: "progress",
-  });
-  emitMarathonTelemetry("marathon_progress_notified", {
-    taskId: checkpoint.taskId,
-    done,
-    total,
-    progressPct,
+    deps,
+    emitTelemetry: emitMarathonTelemetry,
+    context,
   });
 }
 
@@ -1490,6 +1101,11 @@ async function sendProgressUpdate(
 // Re-export for backward compatibility
 export { parsePlanFromResult } from "./marathon-prompts.js";
 export { formatFileSize } from "./marathon-prompts.js";
+export {
+  autoDetectDeliverables,
+  isManifestDeliverablePath,
+  selectProgressArtifacts,
+} from "./marathon-artifacts.js";
 
 function emitMarathonTelemetry(event: string, metadata: Record<string, unknown>): void {
   logProductTelemetry({
