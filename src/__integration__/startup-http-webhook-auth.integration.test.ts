@@ -26,6 +26,7 @@ vi.mock("../infra/home-dir.js", () => ({
   resolveHomeDir: () => state.homeDir,
   expandTilde: (input: string) => input.replace(/^~(?=\/|$)/, state.homeDir),
   ensureHomeDir: () => state.homeDir,
+  homeRelative: (rel: string) => path.join(state.homeDir, rel),
 }));
 
 vi.mock("../gateway/server.js", () => ({

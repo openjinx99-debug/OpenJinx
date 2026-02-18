@@ -1,19 +1,21 @@
 import fs from "node:fs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const DEFAULT_VALID_CONFIG = {
+  channels: {
+    terminal: { enabled: true },
+    telegram: { enabled: false, streaming: true, mode: "polling" },
+    whatsapp: { enabled: false },
+  },
+  composio: { enabled: false, userId: "default", timeoutSeconds: 60 },
+};
+
 vi.mock("../../config/loader.js", () => ({
   resolveConfigPath: vi.fn(() => "/tmp/.jinx/config.yaml"),
 }));
 
 vi.mock("../../config/validation.js", () => ({
-  loadAndValidateConfig: vi.fn().mockResolvedValue({
-    channels: {
-      terminal: { enabled: true },
-      telegram: { enabled: false, streaming: true, mode: "polling" },
-      whatsapp: { enabled: false },
-    },
-    composio: { enabled: false, userId: "default", timeoutSeconds: 60 },
-  }),
+  loadAndValidateConfig: vi.fn().mockResolvedValue(DEFAULT_VALID_CONFIG),
 }));
 
 vi.mock("../../infra/home-dir.js", () => ({
@@ -29,10 +31,31 @@ vi.mock("../../infra/fetch-retry.js", () => ({
   fetchWithRetry: vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) }),
 }));
 
+vi.mock("../../onboarding/state.js", () => ({
+  readSetupState: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe("doctorCommand", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { loadAndValidateConfig } = await import("../../config/validation.js");
+    vi.mocked(loadAndValidateConfig).mockResolvedValue(DEFAULT_VALID_CONFIG as never);
+
+    const { fetchWithRetry } = await import("../../infra/fetch-retry.js");
+    vi.mocked(fetchWithRetry).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    } as Response);
+
+    const { hasAuth, resolveAuth } = await import("../../providers/auth.js");
+    vi.mocked(hasAuth).mockReturnValue(true);
+    vi.mocked(resolveAuth).mockReturnValue({ mode: "api-key", key: "sk-ant-test" });
+
+    const { readSetupState } = await import("../../onboarding/state.js");
+    vi.mocked(readSetupState).mockResolvedValue(undefined);
   });
 
   it("runs all tiers and reports results", async () => {
@@ -52,6 +75,7 @@ describe("doctorCommand", () => {
     expect(output).toContain("Config file");
     expect(output).toContain("Workspace");
     expect(output).toContain("Node.js");
+    expect(output).toContain("Config validation");
 
     // Tier 2: API Keys
     expect(output).toContain("API Keys (live validation):");
@@ -191,6 +215,66 @@ describe("doctorCommand", () => {
     const output = logCalls.join("\n");
 
     expect(output).toContain("[FAIL] Claude auth: No auth found");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("surfaces config validation errors as blockers", async () => {
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+
+    const { loadAndValidateConfig } = await import("../../config/validation.js");
+    vi.mocked(loadAndValidateConfig).mockRejectedValue(
+      new Error("Invalid config:\nchannels.telegram.mode: Invalid option"),
+    );
+
+    const { doctorCommand } = await import("./doctor.js");
+
+    process.exitCode = undefined;
+    await doctorCommand.parseAsync([], { from: "user" });
+
+    const logCalls = vi.mocked(console.log).mock.calls.flat();
+    const output = logCalls.join("\n");
+
+    expect(output).toContain("[FAIL] Config validation");
+    expect(output).toContain("Invalid config:");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("prints onboarding blockers and actionable fixes in --onboarding mode", async () => {
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+
+    const { readSetupState } = await import("../../onboarding/state.js");
+    vi.mocked(readSetupState).mockResolvedValue({
+      version: 1,
+      updatedAt: "2026-02-16T00:00:00.000Z",
+      assistantName: "Jinx",
+      blockedReason: "Claude auth missing (no Keychain/OAuth/API key)",
+      steps: {
+        prerequisites: "completed",
+        dependencies: "completed",
+        assistantName: "completed",
+        apiKeys: "blocked",
+        bootstrap: "pending",
+        whatsapp: "skipped",
+        telegram: "skipped",
+        sandbox: "skipped",
+        verify: "pending",
+      },
+    });
+
+    const { doctorCommand } = await import("./doctor.js");
+
+    process.exitCode = undefined;
+    await doctorCommand.parseAsync(["node", "doctor", "--onboarding"]);
+
+    const logCalls = vi.mocked(console.log).mock.calls.flat();
+    const output = logCalls.join("\n");
+
+    expect(output).toContain("Onboarding State:");
+    expect(output).toContain("[FAIL] Setup state: Claude auth missing (no Keychain/OAuth/API key)");
+    expect(output).toContain("Onboarding readiness:");
+    expect(output).toContain("Recommended fixes:");
+    expect(output).toContain("setup-state show --json");
+    expect(output).toContain("Onboarding is not ready yet.");
     expect(process.exitCode).toBe(1);
   });
 });

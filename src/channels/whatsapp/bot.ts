@@ -7,6 +7,7 @@ import type { WhatsAppSocket } from "./session.js";
 import { expandTilde } from "../../infra/home-dir.js";
 import { createLogger } from "../../infra/logger.js";
 import { subscribeStream } from "../../pipeline/streaming.js";
+import { checkWhatsAppAccess } from "./access.js";
 import { whatsappMessageToContext, extractMediaAttachments } from "./context.js";
 import { dispatchWhatsAppMessage } from "./dispatch.js";
 import { markdownToWhatsApp } from "./format.js";
@@ -59,6 +60,26 @@ export function createWhatsAppChannel(
       return;
     }
 
+    const ctx = whatsappMessageToContext(msg);
+    const jid = ctx.isGroup ? ctx.groupId! : ctx.senderId;
+
+    // Check access control early — before downloading media, subscribing
+    // to streams, or showing typing indicators. Silently drop denied messages.
+    const whatsappCfg = deps.config.channels.whatsapp;
+    const allowed = checkWhatsAppAccess({
+      jid,
+      isGroup: ctx.isGroup,
+      dmPolicy: whatsappCfg.dmPolicy ?? "open",
+      groupPolicy: whatsappCfg.groupPolicy,
+      allowFrom: whatsappCfg.allowFrom,
+    });
+    if (!allowed) {
+      logger.debug(`Ignored message from ${jid} (access denied)`);
+      return;
+    }
+
+    logger.info(`Message from ${ctx.senderName} in ${jid}`);
+
     // Download media buffers if present
     if (media.length > 0) {
       try {
@@ -69,7 +90,6 @@ export function createWhatsAppChannel(
       }
     }
 
-    const ctx = whatsappMessageToContext(msg);
     // Populate downloaded buffers into context media
     if (ctx.media && media.length > 0) {
       for (let i = 0; i < ctx.media.length; i++) {
@@ -78,9 +98,6 @@ export function createWhatsAppChannel(
         }
       }
     }
-    const jid = ctx.isGroup ? ctx.groupId! : ctx.senderId;
-
-    logger.info(`Message from ${ctx.senderName} in ${jid}`);
 
     // Subscribe to stream events — no streaming (WA can't edit messages),
     // only act on "final" to send the response

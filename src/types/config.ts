@@ -14,6 +14,7 @@ export interface JinxConfig {
   webSearch: WebSearchConfig;
   composio: ComposioConfig;
   sandbox: SandboxConfig;
+  marathon: MarathonConfig;
 }
 
 // ── LLM ──────────────────────────────────────────────────────────────────
@@ -217,6 +218,82 @@ export interface SandboxConfig {
   allowedMounts: string[];
   /** Whether the workspace is mounted read-write (vs read-only). */
   workspaceWritable: boolean;
+}
+
+// ── Marathon ─────────────────────────────────────────────────────────────
+
+export interface MarathonConfig {
+  enabled: boolean;
+  /** Maximum concurrent marathon tasks. */
+  maxConcurrent: number;
+  /** Pause between chunks in milliseconds. */
+  chunkIntervalMs: number;
+  /** Maximum number of chunks per marathon. */
+  maxChunks: number;
+  /** Maximum total duration in hours. */
+  maxDurationHours: number;
+  /** Maximum retries per chunk before pausing. */
+  maxRetriesPerChunk: number;
+  /** How long to keep the container alive after completion (ms). Default: 24h. */
+  completionRetentionMs: number;
+  /** Container resource overrides for marathon tasks. */
+  container: MarathonContainerConfig;
+  /** Progress notification settings. */
+  progress: MarathonProgressConfig;
+  /** Workspace context enrichment settings. */
+  context: MarathonContextConfig;
+  /** Test-fix loop settings. */
+  testFix: MarathonTestFixConfig;
+  /** Marathon control authorization policy. */
+  control: MarathonControlConfig;
+}
+
+export interface MarathonContainerConfig {
+  /** CPU count for marathon containers. */
+  cpus: number;
+  /** Memory in GB for marathon containers. */
+  memoryGB: number;
+  /** Command timeout for marathon container operations (ms). */
+  commandTimeoutMs: number;
+}
+
+export interface MarathonProgressConfig {
+  /** Send progress notification every N completed chunks. */
+  notifyEveryNChunks: number;
+  /** Include file summary in progress notifications. */
+  includeFileSummary: boolean;
+}
+
+export interface MarathonContextConfig {
+  /** Whether to enrich chunk prompts with workspace snapshots. */
+  enabled: boolean;
+  /** Maximum number of files to include in the file tree. */
+  maxTreeFiles: number;
+  /** Maximum bytes per key file read. */
+  maxFileBytes: number;
+  /** Maximum total characters for the entire workspace snapshot. */
+  maxTotalChars: number;
+}
+
+export interface MarathonTestFixConfig {
+  /** Whether to run test-fix loops after each chunk. */
+  enabled: boolean;
+  /** Maximum fix iterations before giving up. */
+  maxIterations: number;
+  /** Timeout for each test command execution (ms). */
+  testTimeoutMs: number;
+  /** Maximum characters of test output to include in fix prompt. */
+  maxTestOutputChars: number;
+}
+
+export interface MarathonControlConfig {
+  /** Additional controller sender IDs granted at task creation time. */
+  allowFrom: string[];
+  /**
+   * If true, any member in the origin group can control marathons created in that group.
+   * If false, only explicit allowlist/owner can control.
+   */
+  allowSameGroupMembers: boolean;
 }
 
 // ── Logging ──────────────────────────────────────────────────────────────

@@ -1,11 +1,14 @@
 import { Browsers, DisconnectReason, makeWASocket, useMultiFileAuthState } from "baileys";
 import type { WhatsAppMessage } from "./context.js";
 import { createLogger } from "../../infra/logger.js";
+import { BAILEYS_SILENT_LOGGER } from "./baileys-logger.js";
 import { renderQrToTerminal } from "./render-qr.js";
 
 const logger = createLogger("whatsapp:session");
 
-const RECONNECT_DELAY_MS = 3000;
+const RECONNECT_INITIAL_DELAY_MS = 3000;
+const RECONNECT_MAX_DELAY_MS = 60_000;
+const DISCONNECT_LOG_SUMMARY_INTERVAL_MS = 60_000;
 
 /** Minimal interface for a WhatsApp socket (Baileys-compatible shape). */
 export interface WhatsAppSocket {
@@ -44,6 +47,12 @@ export async function createWhatsAppSession(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let currentSock: any;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
+  let disconnectStreak = 0;
+  let disconnectStartedAt = 0;
+  let lastDisconnectLogAt = 0;
+  let suppressedDisconnectLogs = 0;
+  let lastDisconnectStatus: number | undefined;
 
   async function connectSocket() {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -51,6 +60,8 @@ export async function createWhatsAppSession(
     const sock = makeWASocket({
       auth: state,
       browser: Browsers.ubuntu(browserName ?? "Jinx"),
+      // Keep Baileys internals quiet; we emit curated channel logs ourselves.
+      logger: BAILEYS_SILENT_LOGGER as never,
     });
 
     currentSock = sock;
@@ -68,6 +79,22 @@ export async function createWhatsAppSession(
 
       if (connection === "open") {
         connected = true;
+        if (disconnectStreak > 0) {
+          const durationMs = Date.now() - disconnectStartedAt;
+          const summary =
+            suppressedDisconnectLogs > 0
+              ? ` (suppressed ${suppressedDisconnectLogs} repeated disconnect logs)`
+              : "";
+          logger.info(
+            `WhatsApp reconnected after ${disconnectStreak} disconnect(s) over ${Math.round(durationMs / 1000)}s${summary}`,
+          );
+        }
+        disconnectStreak = 0;
+        disconnectStartedAt = 0;
+        lastDisconnectLogAt = 0;
+        suppressedDisconnectLogs = 0;
+        lastDisconnectStatus = undefined;
+        reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
         logger.info("WhatsApp connected");
       }
 
@@ -75,15 +102,41 @@ export async function createWhatsAppSession(
         connected = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-        logger.info(`WhatsApp disconnected (status=${statusCode}, loggedOut=${isLoggedOut})`);
+        const now = Date.now();
+        disconnectStreak++;
+        if (disconnectStartedAt === 0) {
+          disconnectStartedAt = now;
+        }
+
+        const statusChanged = statusCode !== lastDisconnectStatus;
+        const shouldLogDisconnect =
+          isLoggedOut ||
+          disconnectStreak === 1 ||
+          statusChanged ||
+          now - lastDisconnectLogAt >= DISCONNECT_LOG_SUMMARY_INTERVAL_MS;
+        if (shouldLogDisconnect) {
+          const summary =
+            suppressedDisconnectLogs > 0
+              ? ` (suppressed ${suppressedDisconnectLogs} repeated disconnect logs)`
+              : "";
+          logger.warn(
+            `WhatsApp disconnected (status=${statusCode}, loggedOut=${isLoggedOut}, attempt=${disconnectStreak}, nextRetryMs=${reconnectDelayMs})${summary}`,
+          );
+          lastDisconnectLogAt = now;
+          suppressedDisconnectLogs = 0;
+        } else {
+          suppressedDisconnectLogs++;
+        }
+        lastDisconnectStatus = statusCode;
         events.onConnectionUpdate({ connection, isLoggedOut });
 
         // Auto-reconnect unless logged out or explicitly stopped
         if (!isLoggedOut && !stopped) {
-          logger.info(`Reconnecting in ${RECONNECT_DELAY_MS}ms...`);
+          const scheduledDelayMs = reconnectDelayMs;
           reconnectTimer = setTimeout(() => {
             connectSocket().catch((err) => logger.error("Reconnect failed", err));
-          }, RECONNECT_DELAY_MS);
+          }, scheduledDelayMs);
+          reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
         }
         return;
       }

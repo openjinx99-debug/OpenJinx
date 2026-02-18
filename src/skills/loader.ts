@@ -57,7 +57,7 @@ export async function loadSkillEntries(dirs: string[]): Promise<SkillEntry[]> {
     }
   }
 
-  logger.info(
+  logger.debug(
     `Loaded ${skills.length} skills (${skills.filter((s) => s.eligible).length} eligible)`,
   );
   return skills;

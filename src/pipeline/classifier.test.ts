@@ -142,6 +142,67 @@ describe("classifyTask", () => {
     expect(result.reason).toBe("invalid classifier response");
   });
 
+  it("classifies 'build me a full-stack app' as marathon", async () => {
+    mockRunAgentTurn.mockResolvedValueOnce({
+      text: '{"classification":"marathon","reason":"large-scale project request"}',
+      messages: [],
+      hitTurnLimit: false,
+      usage: { inputTokens: 100, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      durationMs: 200,
+      model: "haiku",
+    });
+
+    const result = await classifyTask(
+      "Build me a full-stack app with React frontend, Express backend, and PostgreSQL database",
+      "haiku",
+    );
+
+    expect(result.classification).toBe("marathon");
+    expect(result.reason).toBe("large-scale project request");
+  });
+
+  it("classifies 'create a REST API with tests and deployment' as marathon", async () => {
+    mockRunAgentTurn.mockResolvedValueOnce({
+      text: '{"classification":"marathon","reason":"multi-hour autonomous build"}',
+      messages: [],
+      hitTurnLimit: false,
+      usage: { inputTokens: 100, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      durationMs: 200,
+      model: "haiku",
+    });
+
+    const result = await classifyTask(
+      "Create a REST API with full test coverage and deployment configuration",
+      "haiku",
+    );
+
+    expect(result.classification).toBe("marathon");
+  });
+
+  it("still classifies 'what time is it' as quick", async () => {
+    // Under 20 chars, no LLM call
+    const result = await classifyTask("what time is it?", "haiku");
+    expect(result.classification).toBe("quick");
+  });
+
+  it("still classifies 'write a function' as deep", async () => {
+    mockRunAgentTurn.mockResolvedValueOnce({
+      text: '{"classification":"deep","reason":"code generation task"}',
+      messages: [],
+      hitTurnLimit: false,
+      usage: { inputTokens: 80, outputTokens: 15, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      durationMs: 150,
+      model: "haiku",
+    });
+
+    const result = await classifyTask(
+      "Write a function that sorts an array using quicksort algorithm",
+      "haiku",
+    );
+
+    expect(result.classification).toBe("deep");
+  });
+
   it("falls back to quick when provider throws", async () => {
     mockRunAgentTurn.mockRejectedValueOnce(new Error("API rate limit exceeded"));
 

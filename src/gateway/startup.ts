@@ -8,7 +8,7 @@ import { createTelegramChannel } from "../channels/telegram/bot.js";
 import { createWhatsAppChannel } from "../channels/whatsapp/bot.js";
 import { startTriggerSubscriber } from "../composio/trigger-subscriber.js";
 import { CronService } from "../cron/service.js";
-import { deliverOutboundPayloads } from "../delivery/deliver.js";
+import { deliverWithRetryAndFallback } from "../delivery/reliable.js";
 import { prependSystemEvents } from "../events/consumption.js";
 import { createEventQueue } from "../events/queue.js";
 import { deliverHeartbeatEvent } from "../heartbeat/delivery.js";
@@ -22,16 +22,18 @@ import { onHeartbeatWake, cancelAllWakes, requestHeartbeatNow } from "../heartbe
 import { expandTilde, resolveHomeDir } from "../infra/home-dir.js";
 import { createLogger, setLogLevel, suppressSensitiveLogs } from "../infra/logger.js";
 import { SECURE_DIR_MODE } from "../infra/security.js";
-import { chunkText } from "../markdown/chunk.js";
 import { createOpenAIEmbeddingProvider } from "../memory/embeddings.js";
 import { MemorySearchManager } from "../memory/search-manager.js";
+import { listCheckpoints, readCheckpoint } from "../pipeline/checkpoint.js";
 import { getSessionLane } from "../pipeline/lanes.js";
+import { isExecutorAlive, resumeMarathon } from "../pipeline/marathon.js";
 import { createContainerManager } from "../sandbox/container-manager.js";
 import { SessionReaper } from "../sessions/reaper.js";
 import { createSessionStore } from "../sessions/store.js";
 import { resolveTranscriptPath } from "../sessions/transcript.js";
 import { startSkillRefresh } from "../skills/refresh.js";
 import { ensureWorkspace } from "../workspace/bootstrap.js";
+import { resolveTasksRoot } from "../workspace/task-dir.js";
 import { createHttpServer } from "./server-http.js";
 import { createGatewayServer } from "./server.js";
 
@@ -68,6 +70,10 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
   const workspaceDir = path.join(homeDir, "workspace");
   await ensureWorkspace(workspaceDir);
   logger.info("Workspace initialized");
+
+  // 1a. Ensure task output root exists
+  await fsPromises.mkdir(resolveTasksRoot(), { recursive: true, mode: SECURE_DIR_MODE });
+  logger.info("Tasks directory initialized");
 
   // 1b. Ensure memory directory exists
   const memoryDir = expandTilde(config.memory.dir);
@@ -108,6 +114,18 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
     }
   }
 
+  // 1e. Resume active marathon tasks (scan checkpoints, exclude from orphan cleanup)
+  if (containerManager) {
+    const activeCheckpoints = await listCheckpoints({ status: ["executing", "paused"] });
+    if (activeCheckpoints.length > 0) {
+      const excludeIds = activeCheckpoints.map((cp) => cp.containerId);
+      await containerManager.cleanupOrphans(excludeIds);
+      logger.info(
+        `Found ${activeCheckpoints.length} active marathon checkpoint(s), excluded from orphan cleanup`,
+      );
+    }
+  }
+
   // 2. Initialize session store
   const sessions = createSessionStore();
   await sessions.load();
@@ -137,7 +155,9 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
   // 3. Start heartbeat runner + cron service
   //    Both reference each other's closures (heartbeat uses cron tools, cron enqueues to heartbeat).
   //    Both closures only execute after boot, so late-binding via `let` is safe.
-  const eventQueue = createEventQueue();
+  const eventQueue = createEventQueue({
+    persistPath: path.join(homeDir, "events-queue.json"),
+  });
   let cron: CronService;
 
   const heartbeat = new HeartbeatRunner(
@@ -246,6 +266,52 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
       const agentId = job.target.agentId || config.agents.default;
       const ts = Date.now();
 
+      // Marathon watchdog: check if executor is still alive and resume if needed
+      if (job.payload.marathonWatchdog) {
+        const { taskId } = job.payload.marathonWatchdog;
+        if (!isExecutorAlive(taskId)) {
+          const checkpoint = await readCheckpoint(taskId);
+          if (!checkpoint) {
+            const removed = cron.remove(job.id);
+            logger.info(
+              `Marathon watchdog: removed stale job=${job.id} task=${taskId} (checkpoint missing, removed=${removed})`,
+            );
+            return "watchdog stale removed";
+          }
+
+          if (checkpoint.status !== "paused" && checkpoint.status !== "executing") {
+            const removed = cron.remove(job.id);
+            logger.info(
+              `Marathon watchdog: removed stale job=${job.id} task=${taskId} status=${checkpoint.status} (removed=${removed})`,
+            );
+            return "watchdog stale removed";
+          }
+
+          logger.info(`Marathon watchdog: executor dead for task=${taskId}, resuming...`);
+          try {
+            await resumeMarathon(taskId, {
+              config,
+              sessions,
+              cronService: cron,
+              channels,
+              containerManager,
+              searchManager,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes("Marathon not found")) {
+              const removed = cron.remove(job.id);
+              logger.warn(
+                `Marathon watchdog resume failed for ${taskId}: ${msg} (stale job removed=${removed})`,
+              );
+              return "watchdog stale removed";
+            }
+            logger.warn(`Marathon watchdog resume failed for ${taskId}: ${msg}`);
+          }
+        }
+        return "watchdog ok";
+      }
+
       if (job.payload.isolated) {
         // Isolated: run in a dedicated cron session
         const cronSessionKey = `cron:${agentId}:${ts}`;
@@ -273,34 +339,39 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
         // otherwise fall back to heartbeat delivery path
         const text = `⏰ [${job.name}] ${result.text}`;
         if (job.target.deliverTo) {
-          const ch = channels.get(job.target.deliverTo.channel);
-          if (ch?.isReady()) {
-            await deliverOutboundPayloads({
-              payload: { text },
-              target: job.target.deliverTo,
-              deps: { getChannel: (name) => channels.get(name), chunkText },
-            });
-          } else {
-            logger.warn(
-              `Cron "${job.name}": channel ${job.target.deliverTo.channel} not ready, falling back to heartbeat delivery`,
-            );
-            deliverHeartbeatEvent(
-              {
-                type: "heartbeat",
-                agentId,
-                timestamp: ts,
-                hasContent: true,
-                text,
-                wasOk: false,
-                durationMs: Date.now() - ts,
-              },
-              {
-                sessions,
-                visibility: { showOk: false, showAlerts: true, useIndicator: false },
-                getChannel: (name) => channels.get(name),
-              },
-            );
-          }
+          await deliverWithRetryAndFallback({
+            payload: { text },
+            target: job.target.deliverTo,
+            deps: { getChannel: (name) => channels.get(name) },
+            source: "cron",
+            reason: "isolated-cron",
+            taskId: job.id,
+            maxAttempts: 3,
+            retryBaseMs: 100,
+            retryMaxMs: 800,
+            terminalText: text,
+            emitFallback: (_sessionKey, fallbackText) => {
+              logger.warn(
+                `Cron "${job.name}": delivery failed on ${job.target.deliverTo!.channel}, falling back to heartbeat delivery`,
+              );
+              deliverHeartbeatEvent(
+                {
+                  type: "heartbeat",
+                  agentId,
+                  timestamp: ts,
+                  hasContent: true,
+                  text: fallbackText,
+                  wasOk: false,
+                  durationMs: Date.now() - ts,
+                },
+                {
+                  sessions,
+                  visibility: { showOk: false, showAlerts: true, useIndicator: false },
+                  getChannel: (name) => channels.get(name),
+                },
+              );
+            },
+          });
         } else {
           deliverHeartbeatEvent(
             {
@@ -423,9 +494,27 @@ export async function bootGateway(config: JinxConfig): Promise<BootResult> {
     logger.info("WhatsApp channel started");
   }
 
-  // 6c. Start session reaper for ephemeral sessions (cron + deep work)
-  const reaper = new SessionReaper(sessions, { prefixes: ["cron:", "deepwork:"] });
+  // 6c. Start session reaper for ephemeral sessions (cron + deep work + marathon)
+  const reaper = new SessionReaper(sessions, { prefixes: ["cron:", "deepwork:", "marathon:"] });
   reaper.start();
+
+  // 6c.5. Resume active marathon tasks (after all deps are wired)
+  if (containerManager) {
+    const marathonCheckpoints = await listCheckpoints({ status: ["executing"] });
+    for (const cp of marathonCheckpoints) {
+      logger.info(`Resuming marathon task=${cp.taskId} from chunk ${cp.currentChunkIndex}`);
+      resumeMarathon(cp.taskId, {
+        config,
+        sessions,
+        cronService: cron,
+        channels,
+        containerManager,
+        searchManager,
+      }).catch((err) => {
+        logger.warn(`Marathon resume failed for ${cp.taskId}: ${err}`);
+      });
+    }
+  }
 
   // 6d. Start skill hot-reload watcher
   const stopSkillRefresh = startSkillRefresh(config.skills.dirs, (skills) => {

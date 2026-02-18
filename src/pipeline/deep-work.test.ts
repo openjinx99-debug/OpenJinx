@@ -23,8 +23,14 @@ vi.mock("./streaming.js", () => ({
 }));
 
 const mockReadFile = vi.fn();
+const mockMkdir = vi.fn().mockResolvedValue(undefined);
+const mockAppendFile = vi.fn().mockResolvedValue(undefined);
 vi.mock("node:fs/promises", () => ({
-  default: { readFile: (...args: unknown[]) => mockReadFile(...args) },
+  default: {
+    readFile: (...args: unknown[]) => mockReadFile(...args),
+    mkdir: (...args: unknown[]) => mockMkdir(...args),
+    appendFile: (...args: unknown[]) => mockAppendFile(...args),
+  },
 }));
 
 const { launchDeepWork } = await import("./deep-work.js");

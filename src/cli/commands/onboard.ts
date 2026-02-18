@@ -4,12 +4,13 @@ import path from "node:path";
 import yaml from "yaml";
 import { DEFAULT_CONFIG } from "../../config/defaults.js";
 import { resolveHomeDir, ensureHomeDir } from "../../infra/home-dir.js";
+import { resolveAuth } from "../../providers/auth.js";
 import { ensureWorkspace } from "../../workspace/bootstrap.js";
 
 export const onboardCommand = new Command("onboard")
-  .description("First-time setup wizard for Jinx")
+  .description("Bootstrap Jinx home directory, config, and workspace templates")
   .action(async () => {
-    console.log("Welcome to Jinx! Let's get you set up.\n");
+    console.log("Bootstrapping Jinx...\n");
 
     // 1. Ensure home directory
     const homeDir = resolveHomeDir();
@@ -35,19 +36,23 @@ export const onboardCommand = new Command("onboard")
     console.log(`Workspace ready: ${workspaceDir}`);
 
     // 4. Check Claude auth
-    const hasOauth = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-    if (hasOauth || hasApiKey) {
-      console.log(`Claude auth: ${hasOauth ? "OAuth token" : "API key"} found`);
-    } else {
+    try {
+      const auth = resolveAuth();
+      console.log(`Claude auth: ${auth.mode === "oauth" ? "OAuth token" : "API key"} found`);
+    } catch {
       console.log(
         "\nNo Claude auth found. Set one of:\n" +
+          "  # Option 1: put credentials in ~/.jinx/.env (auto-loaded)\n" +
+          "  ANTHROPIC_API_KEY=sk-ant-...\n" +
+          "  CLAUDE_CODE_OAUTH_TOKEN=...\n\n" +
+          "  # Option 2: export in your shell\n" +
           "  export ANTHROPIC_API_KEY=sk-ant-...\n" +
-          "  export CLAUDE_CODE_OAUTH_TOKEN=...\n",
+          "  export CLAUDE_CODE_OAUTH_TOKEN=...\n\n" +
+          "  # Option 3 (macOS): run `claude login` and reuse Keychain OAuth\n",
       );
     }
 
-    console.log("\nSetup complete! Run `jinx chat` to start a conversation.");
+    console.log("\nBootstrap complete! Run `jinx chat` to start a conversation.");
     console.log(
       "Tip: For a guided setup experience, run `claude` in the repo root and type `/setup`.",
     );

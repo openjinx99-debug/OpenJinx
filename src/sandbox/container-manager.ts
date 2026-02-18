@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
-import type { ContainerSession, ExecResult, SandboxConfig } from "./types.js";
+import type {
+  ContainerInspectResult,
+  ContainerSession,
+  ExecResult,
+  SandboxConfig,
+} from "./types.js";
 import { createLogger } from "../infra/logger.js";
 import { buildMountList } from "./mount-security.js";
 import { isAppleContainerReady, describeRuntime } from "./runtime-detect.js";
@@ -26,6 +31,8 @@ const READY_TIMEOUT_MS = 30_000;
 interface ManagedContainer extends ContainerSession {
   /** Shared promise for concurrent getOrCreate callers. */
   readyPromise: Promise<void> | null;
+  /** Workspace directory used when this container was created. */
+  workspaceDir?: string;
 }
 
 export interface ContainerManager {
@@ -45,6 +52,18 @@ export interface ContainerManager {
   sweepIdle(): void;
   /** Tear down: clear sweep timer + stop all containers. */
   dispose(): Promise<void>;
+  /** Promote a container to persistent lifecycle (survives idle sweep). */
+  promote(sessionKey: string): void;
+  /** Demote a container back to ephemeral lifecycle (subject to idle sweep). */
+  demote(sessionKey: string): void;
+  /** Set a retention period: container stays alive until Date.now() + durationMs. */
+  setRetention(sessionKey: string, durationMs: number): void;
+  /** Inspect a container's current state. */
+  inspect(sessionKey: string): Promise<ContainerInspectResult | undefined>;
+  /** Reattach to an existing container by ID. Returns true if alive and registered. */
+  reattach(containerId: string, sessionKey: string, workspaceDir: string): Promise<boolean>;
+  /** Clean up orphaned jinx containers, optionally excluding specific IDs. */
+  cleanupOrphans(excludeIds?: string[]): Promise<void>;
 }
 
 /**
@@ -87,6 +106,14 @@ export function createContainerManager(config: SandboxConfig): ContainerManager 
     // Build container run args for persistent (detached) container
     const args = ["run", "-d", "--name", containerId];
 
+    // Resource limits (optional)
+    if (config.cpus) {
+      args.push("--cpus", String(config.cpus));
+    }
+    if (config.memoryGB) {
+      args.push("--memory", `${config.memoryGB}g`);
+    }
+
     for (const mount of mounts) {
       const mountStr = mount.readOnly
         ? `type=bind,source=${mount.hostPath},target=${mount.containerPath},readonly`
@@ -105,9 +132,11 @@ export function createContainerManager(config: SandboxConfig): ContainerManager 
       containerId,
       sessionKey,
       status: "starting",
+      lifecycle: "ephemeral",
       startedAt: now,
       lastExecAt: now,
       readyPromise: null,
+      workspaceDir,
     };
 
     // Start the container
@@ -297,7 +326,7 @@ export function createContainerManager(config: SandboxConfig): ContainerManager 
     });
   }
 
-  async function cleanupOrphans(): Promise<void> {
+  async function cleanupOrphans(excludeIds?: string[]): Promise<void> {
     const child = spawn("container", ["ls", "--filter", "name=jinx-", "-q"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
@@ -313,10 +342,11 @@ export function createContainerManager(config: SandboxConfig): ContainerManager 
       child.on("error", () => resolve());
     });
 
+    const excludeSet = new Set(excludeIds ?? []);
     const ids = stdout
       .split("\n")
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((id) => id && !excludeSet.has(id));
     if (ids.length === 0) {
       return;
     }
@@ -407,6 +437,18 @@ export function createContainerManager(config: SandboxConfig): ContainerManager 
     sweepIdle() {
       const now = Date.now();
       for (const [key, container] of containers) {
+        if (container.lifecycle === "persistent") {
+          // Persistent containers with expired retention get destroyed
+          if (container.retentionUntil && now > container.retentionUntil) {
+            logger.info(
+              `Retention expired: destroying container ${container.containerId} (session=${key})`,
+            );
+            mgr.stop(key).catch((err) => {
+              logger.warn(`Failed to stop retained container ${container.containerId}: ${err}`);
+            });
+          }
+          continue;
+        }
         if (container.status === "ready" && now - container.lastExecAt > config.idleTimeoutMs) {
           logger.info(`Idle sweep: destroying container ${container.containerId} (session=${key})`);
           mgr.stop(key).catch((err) => {
@@ -423,6 +465,70 @@ export function createContainerManager(config: SandboxConfig): ContainerManager 
       }
       await mgr.stopAll();
     },
+
+    promote(sessionKey: string) {
+      const container = containers.get(sessionKey);
+      if (container) {
+        container.lifecycle = "persistent";
+        logger.info(`Promoted container ${container.containerId} to persistent`);
+      }
+    },
+
+    demote(sessionKey: string) {
+      const container = containers.get(sessionKey);
+      if (container) {
+        container.lifecycle = "ephemeral";
+        logger.info(`Demoted container ${container.containerId} to ephemeral`);
+      }
+    },
+
+    setRetention(sessionKey: string, durationMs: number) {
+      const container = containers.get(sessionKey);
+      if (container) {
+        container.retentionUntil = Date.now() + durationMs;
+        logger.info(
+          `Set retention on container ${container.containerId}: ${Math.round(durationMs / 3600_000)}h`,
+        );
+      }
+    },
+
+    async inspect(sessionKey: string) {
+      const container = containers.get(sessionKey);
+      if (!container) {
+        return undefined;
+      }
+      const alive = await isContainerAlive(container.containerId);
+      return {
+        alive,
+        uptimeMs: Date.now() - container.startedAt,
+        containerId: container.containerId,
+        lifecycle: container.lifecycle,
+      };
+    },
+
+    async reattach(containerId: string, sessionKey: string, workspaceDir: string) {
+      const alive = await isContainerAlive(containerId);
+      if (!alive) {
+        return false;
+      }
+      const now = Date.now();
+      const managed: ManagedContainer = {
+        containerId,
+        sessionKey,
+        status: "ready",
+        lifecycle: "persistent",
+        startedAt: now,
+        lastExecAt: now,
+        readyPromise: null,
+        workspaceDir,
+      };
+      containers.set(sessionKey, managed);
+      startSweep();
+      logger.info(`Reattached container ${containerId} for session=${sessionKey}`);
+      return true;
+    },
+
+    cleanupOrphans,
   };
 
   return mgr;

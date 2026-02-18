@@ -16,23 +16,24 @@ Jinx connects to messaging platforms (Telegram, WhatsApp, terminal) through a We
 pnpm install
 pnpm dev onboard            # First-time setup (creates ~/.jinx/, config, workspace)
 pnpm dev doctor             # Verify everything is green
+pnpm dev -- doctor --onboarding   # Onboarding readiness blockers + fixes
 ```
 
 ## Authentication
 
 Jinx resolves auth automatically using this priority chain:
 
-| Priority | Source                            | How to set                            |
-| -------- | --------------------------------- | ------------------------------------- |
-| 1        | `CLAUDE_CODE_OAUTH_TOKEN` env var | `export CLAUDE_CODE_OAUTH_TOKEN=...`  |
-| 2        | `ANTHROPIC_API_KEY` env var       | `export ANTHROPIC_API_KEY=sk-ant-...` |
-| 3        | **macOS Keychain** (automatic)    | Just have Claude Code logged in       |
+| Priority | Source                            | How to set                                       |
+| -------- | --------------------------------- | ------------------------------------------------ |
+| 1        | `CLAUDE_CODE_OAUTH_TOKEN` env var | Export it in shell or put it in `~/.jinx/.env`   |
+| 2        | `ANTHROPIC_API_KEY` env var       | Export it in shell or put it in `~/.jinx/.env`   |
+| 3        | **macOS Keychain** (automatic)    | Just have Claude Code logged in (`claude login`) |
 
-**There is no `.env` file.** Jinx does not read from or write to any `.env` file.
+At startup, Jinx auto-loads `~/.jinx/.env` (if present) with `override: false`, so shell environment variables still take precedence.
 
 ### Recommended: Reuse Claude Code's OAuth token (zero setup)
 
-If you have [Claude Code](https://claude.ai/code) installed and logged in on your Mac, Jinx automatically reads the OAuth token from the macOS Keychain. No env vars, no config, no `.env` file needed.
+If you have [Claude Code](https://claude.ai/code) installed and logged in on your Mac, Jinx automatically reads the OAuth token from the macOS Keychain. No manual API key setup is required.
 
 Claude Code stores its credentials in the Keychain under:
 
@@ -45,7 +46,7 @@ To verify: `pnpm dev doctor` will show `[OK] Claude auth` if the token is found.
 
 ### Alternative: API key
 
-If you're not using Claude Code or you're on Linux/Windows:
+If you're not using Claude Code or you're on Linux/Windows, set an API key either in your shell or in `~/.jinx/.env`:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -75,8 +76,10 @@ Run directly from source via tsx (no build step required):
 pnpm dev                    # Show help / available commands
 pnpm dev chat               # Interactive terminal chat
 pnpm dev gateway            # Start the WebSocket gateway server
-pnpm dev onboard            # First-time setup wizard
+pnpm dev onboard            # Bootstrap ~/.jinx/ (config + workspace templates)
 pnpm dev doctor             # System health check
+pnpm dev -- doctor --onboarding   # Onboarding readiness mode (blockers + remediations)
+pnpm dev setup-state show   # Show onboarding setup-state
 pnpm dev skills list        # List available skills
 pnpm dev memory status      # Memory index status
 pnpm dev send "hello"       # Send a one-shot message via gateway
@@ -123,7 +126,6 @@ The `onboard` command creates this for you. See `examples/config.yaml` for a ful
 
 ```yaml
 llm:
-  authMode: oauth # "oauth" (default, uses Keychain) or "api_key"
   brain: sonnet # primary model (opus | sonnet | haiku)
   subagent: sonnet # sub-agent model
   light: haiku # lightweight tasks (heartbeat, cron)
@@ -142,21 +144,21 @@ gateway:
   port: 18790
 ```
 
-All fields have sensible defaults — an empty config file works out of the box with OAuth auth (reads from macOS Keychain) and terminal channel only. **You do not need a `.env` file.** See [Authentication](#authentication) above for how credentials are resolved.
+All fields have sensible defaults. An empty config file works out of the box with terminal channel only, and Claude auth resolves from env vars (`~/.jinx/.env` is auto-loaded) or macOS Keychain. See [Authentication](#authentication) above for the exact priority chain.
 
 ### Key Config Sections
 
-| Section     | Purpose                                                                 |
-| ----------- | ----------------------------------------------------------------------- |
-| `llm`       | Auth mode, model tiers (brain/subagent/light), budget limits, max turns |
-| `agents`    | Named agent definitions with workspace paths                            |
-| `channels`  | Channel adapters — terminal, telegram, whatsapp                         |
-| `skills`    | Skill directories and exclusions                                        |
-| `memory`    | Memory search — embedding provider, vector weight, max results          |
-| `heartbeat` | Autonomous heartbeat — interval, visibility (showOk, showAlerts)        |
-| `cron`      | Cron scheduler — max jobs, persistence path                             |
-| `gateway`   | WebSocket gateway — host, port                                          |
-| `logging`   | Log level (debug, info, warn, error)                                    |
+| Section     | Purpose                                                          |
+| ----------- | ---------------------------------------------------------------- |
+| `llm`       | Model tiers (brain/subagent/light), budget limits, max turns     |
+| `agents`    | Named agent definitions with workspace paths                     |
+| `channels`  | Channel adapters — terminal, telegram, whatsapp                  |
+| `skills`    | Skill directories and exclusions                                 |
+| `memory`    | Memory search — embedding provider, vector weight, max results   |
+| `heartbeat` | Autonomous heartbeat — interval, visibility (showOk, showAlerts) |
+| `cron`      | Cron scheduler — max jobs, persistence path                      |
+| `gateway`   | WebSocket gateway — host, port                                   |
+| `logging`   | Log level (debug, info, warn, error)                             |
 
 ## Testing
 
@@ -197,6 +199,7 @@ pnpm test:watch             # Watch mode (re-runs on file changes)
 pnpm test:live              # Live integration tests (requires credentials)
 npx vitest run src/path/to/file.test.ts   # Run a single test file
 npx vitest run -c vitest.integration.config.ts src/__integration__/startup-lifecycle.integration.test.ts
+npx vitest run -c vitest.live.config.ts src/__system__/doctor-onboarding.live.test.ts
 ```
 
 ### Coverage thresholds
@@ -261,6 +264,7 @@ openjinx/
 │   ├── heartbeat/            # Autonomous heartbeat — runner, visibility, dedup, active hours
 │   ├── infra/                # Shared utilities — logging, env, home dir, time formatting
 │   ├── memory/               # Memory system — chunker, hybrid search, daily logs, embeddings
+│   ├── onboarding/           # Onboarding state persistence and helpers
 │   ├── pipeline/             # Message pipeline — dispatch, lanes, streaming, classifier, deep work
 │   ├── providers/            # LLM provider — Claude Agent SDK, auth, model mapping
 │   ├── sessions/             # Session management — store, locks, transcripts, compaction
@@ -529,9 +533,14 @@ pnpm dev composio connections   # List active connections
 | `composio_trigger_list`     | List active triggers            |
 | `composio_trigger_delete`   | Remove a trigger                |
 
-## Workspace Files
+## Identity & Workspace Files
 
-The workspace (`~/.jinx/workspace/`) contains 8 markdown files that shape the agent's personality and behavior:
+Jinx separates persistent identity from task outputs:
+
+- `~/.jinx/workspace/` — Identity files that shape the agent's personality (persistent, never auto-cleaned)
+- `~/.jinx/tasks/` — Scoped output directories per task (chat, deep work, marathon)
+
+The workspace contains 8 markdown files that shape the agent's personality and behavior:
 
 | File           | Purpose                                     |
 | -------------- | ------------------------------------------- |

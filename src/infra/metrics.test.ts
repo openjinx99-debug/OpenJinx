@@ -70,6 +70,18 @@ describe("logTurnMetric", () => {
     // Check owner-only rw (0o600) — mask off file type bits
     expect(stats.mode & 0o777).toBe(0o600);
   });
+
+  it("skips writes in test mode when JINX_HOME is not set", () => {
+    const appendSpy = vi.spyOn(fs, "appendFileSync");
+    vi.unstubAllEnvs();
+
+    logTurnMetric(makeTurnMetric());
+
+    expect(appendSpy).not.toHaveBeenCalled();
+
+    appendSpy.mockRestore();
+    vi.stubEnv("JINX_HOME", tmpDir);
+  });
 });
 
 describe("readMetrics", () => {

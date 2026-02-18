@@ -27,18 +27,36 @@ export interface SandboxConfig {
   allowedMounts: string[];
   /** Whether the workspace is mounted read-write (vs read-only). */
   workspaceWritable: boolean;
+  /** CPU count override for containers (passed as --cpus). */
+  cpus?: number;
+  /** Memory in GB override for containers (passed as --memory). */
+  memoryGB?: number;
 }
 
 /** Status of a managed container session. */
 export type ContainerStatus = "starting" | "ready" | "stopping" | "stopped";
+
+/** Lifecycle mode: ephemeral containers are swept by idle timeout, persistent are not. */
+export type ContainerLifecycle = "ephemeral" | "persistent";
 
 /** Tracks a persistent container session. */
 export interface ContainerSession {
   containerId: string;
   sessionKey: string;
   status: ContainerStatus;
+  lifecycle: ContainerLifecycle;
   startedAt: number;
   lastExecAt: number;
+  /** If set, container stays alive until this timestamp even after demotion. */
+  retentionUntil?: number;
+}
+
+/** Result of inspecting a container's state. */
+export interface ContainerInspectResult {
+  alive: boolean;
+  uptimeMs: number;
+  containerId: string;
+  lifecycle: ContainerLifecycle;
 }
 
 /** A mount entry for the container. */

@@ -75,6 +75,7 @@ const telegramSchema = z.object({
   enabled: z.boolean().default(false),
   dmPolicy: dmPolicy.optional(),
   groupPolicy: groupPolicy.optional(),
+  allowFrom: z.array(z.string()).optional(),
   botToken: z.string().optional(),
   allowedChatIds: z.array(z.number()).optional(),
   streaming: z.boolean().default(true),
@@ -269,6 +270,78 @@ export const sandboxSchema = z
     workspaceWritable: true,
   });
 
+// ── Marathon ────────────────────────────────────────────────────────────
+
+const marathonContainerSchema = z
+  .object({
+    cpus: z.number().int().min(1).default(4),
+    memoryGB: z.number().min(1).default(4),
+    commandTimeoutMs: z.number().int().min(1000).default(600_000),
+  })
+  .default({ cpus: 4, memoryGB: 4, commandTimeoutMs: 600_000 });
+
+const marathonProgressSchema = z
+  .object({
+    notifyEveryNChunks: z.number().int().min(1).default(1),
+    includeFileSummary: z.boolean().default(true),
+  })
+  .default({ notifyEveryNChunks: 1, includeFileSummary: true });
+
+const marathonContextSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxTreeFiles: z.number().int().min(10).default(200),
+    maxFileBytes: z.number().int().min(1024).default(8192),
+    maxTotalChars: z.number().int().min(1000).default(30_000),
+  })
+  .default({ enabled: true, maxTreeFiles: 200, maxFileBytes: 8192, maxTotalChars: 30_000 });
+
+const marathonTestFixSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxIterations: z.number().int().min(0).default(3),
+    testTimeoutMs: z.number().int().min(5000).default(120_000),
+    maxTestOutputChars: z.number().int().min(500).default(8_000),
+  })
+  .default({ enabled: true, maxIterations: 3, testTimeoutMs: 120_000, maxTestOutputChars: 8_000 });
+
+const marathonControlSchema = z
+  .object({
+    allowFrom: z.array(z.string()).default([]),
+    allowSameGroupMembers: z.boolean().default(false),
+  })
+  .default({ allowFrom: [], allowSameGroupMembers: false });
+
+export const marathonSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxConcurrent: z.number().int().min(1).default(1),
+    chunkIntervalMs: z.number().int().min(0).default(5000),
+    maxChunks: z.number().int().min(1).default(50),
+    maxDurationHours: z.number().min(0.1).default(12),
+    maxRetriesPerChunk: z.number().int().min(0).default(3),
+    completionRetentionMs: z.number().int().min(0).default(14_400_000),
+    container: marathonContainerSchema,
+    progress: marathonProgressSchema,
+    context: marathonContextSchema,
+    testFix: marathonTestFixSchema,
+    control: marathonControlSchema,
+  })
+  .default({
+    enabled: true,
+    maxConcurrent: 1,
+    chunkIntervalMs: 5000,
+    maxChunks: 50,
+    maxDurationHours: 12,
+    maxRetriesPerChunk: 3,
+    completionRetentionMs: 14_400_000,
+    container: { cpus: 4, memoryGB: 4, commandTimeoutMs: 600_000 },
+    progress: { notifyEveryNChunks: 1, includeFileSummary: true },
+    context: { enabled: true, maxTreeFiles: 200, maxFileBytes: 8192, maxTotalChars: 30_000 },
+    testFix: { enabled: true, maxIterations: 3, testTimeoutMs: 120_000, maxTestOutputChars: 8_000 },
+    control: { allowFrom: [], allowSameGroupMembers: false },
+  });
+
 // ── Root ─────────────────────────────────────────────────────────────────
 
 export const jinxConfigSchema = z.object({
@@ -285,6 +358,7 @@ export const jinxConfigSchema = z.object({
   webSearch: webSearchSchema,
   composio: composioSchema,
   sandbox: sandboxSchema,
+  marathon: marathonSchema,
 });
 
 export type JinxConfigInput = z.input<typeof jinxConfigSchema>;

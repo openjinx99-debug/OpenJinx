@@ -8,6 +8,14 @@ const logger = createLogger("metrics");
 
 const METRICS_FILENAME = "metrics.jsonl";
 
+function shouldSkipMetricsWriteInTests(): boolean {
+  const inVitest =
+    process.env.VITEST === "true" ||
+    process.env.VITEST === "1" ||
+    process.env.VITEST_WORKER_ID !== undefined;
+  return inVitest && !process.env.JINX_HOME;
+}
+
 /** A single agent turn metric entry. */
 export interface TurnMetric {
   timestamp: number;
@@ -18,7 +26,7 @@ export interface TurnMetric {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   durationMs: number;
-  turnType: "chat" | "heartbeat" | "cron" | "compaction";
+  turnType: "chat" | "heartbeat" | "cron" | "compaction" | "marathon";
 }
 
 /** Aggregated usage summary over a set of metrics. */
@@ -47,6 +55,9 @@ export function getMetricsPath(): string {
  * Writes are synchronous to avoid interleaving from concurrent calls.
  */
 export function logTurnMetric(metric: TurnMetric): void {
+  if (shouldSkipMetricsWriteInTests()) {
+    return;
+  }
   try {
     const filePath = getMetricsPath();
     const line = JSON.stringify(metric) + "\n";
@@ -102,6 +113,7 @@ export function computeUsageSummary(metrics: TurnMetric[]): UsageSummary {
     heartbeat: 0,
     cron: 0,
     compaction: 0,
+    marathon: 0,
   };
 
   for (const m of metrics) {

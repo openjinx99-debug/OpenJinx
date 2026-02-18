@@ -95,6 +95,24 @@ describe("markdownToTelegramHtml", () => {
     const out = markdownToTelegramHtml("[email](mailto:a@b.com)");
     expect(out).toContain('<a href="mailto:a@b.com">');
   });
+
+  it("strips relative file path links (e.g. PROGRESS.md)", () => {
+    const out = markdownToTelegramHtml("[PROGRESS.md](PROGRESS.md)");
+    expect(out).not.toContain("<a");
+    expect(out).toContain("PROGRESS.md");
+  });
+
+  it("strips relative directory path links", () => {
+    const out = markdownToTelegramHtml("[src/index.ts](src/index.ts)");
+    expect(out).not.toContain("<a");
+    expect(out).toContain("src/index.ts");
+  });
+
+  it("strips anchor-only links", () => {
+    const out = markdownToTelegramHtml("[section](#overview)");
+    expect(out).not.toContain("<a");
+    expect(out).toContain("section");
+  });
 });
 
 describe("markdownToTelegramChunks", () => {

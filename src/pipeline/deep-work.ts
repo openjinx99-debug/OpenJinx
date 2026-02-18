@@ -6,18 +6,19 @@ import type { ChannelId } from "../types/config.js";
 import type { DeliveryTarget, OutboundMedia } from "../types/messages.js";
 import type { DispatchDeps } from "./dispatch.js";
 import { runAgent } from "../agents/runner.js";
-import { deliverOutboundPayloads } from "../delivery/deliver.js";
+import { deliverWithRetryAndFallback } from "../delivery/reliable.js";
 import { createLogger } from "../infra/logger.js";
+import { logProductTelemetry } from "../infra/product-telemetry.js";
 import { withTimeout } from "../infra/timeout.js";
-import { chunkText } from "../markdown/chunk.js";
 import { createSessionEntry } from "../sessions/store.js";
 import { resolveTranscriptPath } from "../sessions/transcript.js";
+import { ensureTaskDir, resolveTaskDir } from "../workspace/task-dir.js";
 import { emitStreamEvent } from "./streaming.js";
 
 const logger = createLogger("deep-work");
 
 /** Max time for a deep work agent turn. */
-const DEEP_WORK_TIMEOUT_MS = 15 * 60_000; // 15 minutes
+const DEEP_WORK_TIMEOUT_MS = 30 * 60_000; // 30 minutes
 
 /** MIME types for common text file extensions. */
 const TEXT_MIME: Record<string, string> = {
@@ -75,6 +76,11 @@ async function executeDeepWork(
 ): Promise<void> {
   const { config, sessions } = deps;
 
+  // Create scoped task directory for deep work outputs
+  const shortId = sessionKey.replace("deepwork:", "");
+  const taskDir = resolveTaskDir("deepwork", shortId);
+  await ensureTaskDir(taskDir);
+
   // Create an isolated session for this deep work
   const transcriptPath = resolveTranscriptPath(sessionKey);
   const session = createSessionEntry({
@@ -84,6 +90,7 @@ async function executeDeepWork(
     transcriptPath,
     parentSessionKey: params.originSessionKey,
   });
+  session.taskDir = taskDir;
   sessions.set(sessionKey, session);
 
   logger.info(`Deep work started: session=${sessionKey} origin=${params.originSessionKey}`);
@@ -115,6 +122,7 @@ async function executeDeepWork(
         containerManager: deps.containerManager,
         channel: params.channel,
         senderName: params.senderName,
+        workspaceDir: taskDir,
       }),
       DEEP_WORK_TIMEOUT_MS,
       `Deep work timed out after ${DEEP_WORK_TIMEOUT_MS / 1000}s`,
@@ -186,28 +194,61 @@ async function deliverResult(
   target: DeliveryTarget,
   deps: DispatchDeps,
 ): Promise<void> {
-  const channel = deps.channels?.get(target.channel);
+  const result = await deliverWithRetryAndFallback({
+    payload: { text, media: media.length > 0 ? media : undefined },
+    target,
+    deps: {
+      getChannel: (name) => deps.channels?.get(name),
+    },
+    source: "deep-work",
+    reason: "completion",
+    maxAttempts: 3,
+    retryBaseMs: 100,
+    retryMaxMs: 800,
+    terminalText: text,
+    emitFallback: (sessionKey, fallbackText) => {
+      emitStreamEvent(sessionKey, { type: "final", text: fallbackText });
+    },
+    onAttemptFailed: (metadata) => {
+      logProductTelemetry({
+        area: "delivery",
+        event: "deep_work_delivery_attempt_failed",
+        channel: target.channel,
+        reason: metadata.reason,
+        attempt: metadata.attempt,
+        maxAttempts: metadata.maxAttempts,
+        error: metadata.error,
+      });
+    },
+    onSucceeded: (metadata) => {
+      logProductTelemetry({
+        area: "delivery",
+        event: "deep_work_delivery_succeeded",
+        channel: target.channel,
+        reason: metadata.reason,
+        attempts: metadata.attempts,
+        textChunks: metadata.textChunks,
+        mediaItems: metadata.mediaItems,
+      });
+    },
+    onFallback: (metadata) => {
+      logProductTelemetry({
+        area: "delivery",
+        event: "deep_work_delivery_fallback_terminal",
+        channel: target.channel,
+        reason: metadata.reason,
+        error: metadata.error,
+        deadLetterPath: metadata.deadLetterPath,
+      });
+    },
+  });
 
-  if (channel?.isReady()) {
-    const result = await deliverOutboundPayloads({
-      payload: { text, media: media.length > 0 ? media : undefined },
-      target,
-      deps: {
-        getChannel: (name) => deps.channels?.get(name),
-        chunkText,
-      },
-    });
-
-    if (result.success) {
-      logger.info(
-        `Deep work delivered: ${target.channel}:${target.to} (${result.textChunks} chunks, ${result.mediaItems} files)`,
-      );
-      return;
-    }
-    logger.warn(`Deep work delivery failed: ${result.error}`);
+  if (result.success) {
+    logger.info(
+      `Deep work delivered: ${target.channel}:${target.to} (attempts=${result.attempts}, media=${media.length})`,
+    );
+    return;
   }
 
-  // Fallback: emit to terminal
-  logger.info("Deep work falling back to terminal delivery");
-  emitStreamEvent("terminal:dm:local", { type: "final", text });
+  logger.warn(`Deep work delivery failed after ${result.attempts} attempts: ${result.error}`);
 }

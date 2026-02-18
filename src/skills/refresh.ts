@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { SkillEntry } from "../types/skills.js";
+import { expandTilde } from "../infra/home-dir.js";
 import { createLogger } from "../infra/logger.js";
 import { loadSkillEntries } from "./loader.js";
 
@@ -74,16 +75,26 @@ export function startSkillWatcher(dirs: string[], callback: () => void): fs.FSWa
   };
 
   for (const dir of dirs) {
+    const watchDir = expandTilde(dir);
     try {
-      const watcher = fs.watch(dir, { recursive: true }, () => {
+      const watcher = fs.watch(watchDir, { recursive: true }, () => {
         debouncedCallback();
       });
       watcher.on("error", (err) => {
-        logger.warn(`fs.watch error on ${dir}: ${err}`);
+        logger.warn(`fs.watch error on ${watchDir}: ${err}`);
       });
       watchers.push(watcher);
     } catch (err) {
-      logger.warn(`Failed to watch ${dir}, falling back to polling: ${err}`);
+      const code =
+        typeof err === "object" && err !== null && "code" in err
+          ? String((err as { code?: unknown }).code)
+          : undefined;
+      if (code === "ENOENT") {
+        // Optional directory: polling still loads skills if it appears later.
+        logger.debug(`Skills directory missing for watch (${watchDir}), using polling only`);
+      } else {
+        logger.warn(`Failed to watch ${watchDir}, falling back to polling: ${err}`);
+      }
     }
   }
 

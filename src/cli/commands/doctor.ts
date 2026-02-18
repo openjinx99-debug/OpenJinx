@@ -3,10 +3,12 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { JinxConfig } from "../../types/config.js";
+import type { SetupStepName } from "../../types/onboarding.js";
 import { resolveConfigPath } from "../../config/loader.js";
 import { loadAndValidateConfig } from "../../config/validation.js";
 import { fetchWithRetry } from "../../infra/fetch-retry.js";
 import { resolveHomeDir } from "../../infra/home-dir.js";
+import { readSetupState } from "../../onboarding/state.js";
 import { hasAuth, resolveAuth } from "../../providers/auth.js";
 
 type CheckStatus = "ok" | "fail" | "skip" | "warn";
@@ -18,6 +20,14 @@ interface CheckResult {
 }
 
 const LIVE_TIMEOUT_MS = 5_000;
+const REQUIRED_SETUP_STEPS: readonly SetupStepName[] = [
+  "prerequisites",
+  "dependencies",
+  "assistantName",
+  "apiKeys",
+  "bootstrap",
+  "verify",
+];
 
 function statusIcon(status: CheckStatus): string {
   switch (status) {
@@ -38,6 +48,16 @@ function printSection(title: string, checks: CheckResult[]): void {
     console.log(`  [${statusIcon(check.status)}] ${check.name}: ${check.detail}`);
   }
   console.log();
+}
+
+function extractErrorDetail(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 2)
+    .join(" | ");
 }
 
 // ── Tier 1: Structure checks ───────────────────────────────────────────
@@ -76,6 +96,34 @@ function runStructureChecks(): CheckResult[] {
   });
 
   return checks;
+}
+
+async function loadConfigWithValidation(): Promise<{
+  config?: JinxConfig;
+  validationCheck: CheckResult;
+}> {
+  const configPath = resolveConfigPath();
+  const configExists = fs.existsSync(configPath);
+
+  try {
+    const config = await loadAndValidateConfig();
+    return {
+      config,
+      validationCheck: {
+        name: "Config validation",
+        status: configExists ? "ok" : "skip",
+        detail: configExists ? "schema valid" : "config missing (defaults loaded for checks)",
+      },
+    };
+  } catch (err) {
+    return {
+      validationCheck: {
+        name: "Config validation",
+        status: "fail",
+        detail: extractErrorDetail(err),
+      },
+    };
+  }
 }
 
 // ── Tier 2: Live API validation ────────────────────────────────────────
@@ -387,24 +435,153 @@ async function runChannelChecks(config: JinxConfig | undefined): Promise<CheckRe
   return [telegram, checkWhatsApp(config), checkSandbox()];
 }
 
+// ── Tier 4: Onboarding readiness checks ─────────────────────────────────
+
+async function checkSetupState(): Promise<CheckResult> {
+  try {
+    const setupState = await readSetupState();
+    if (!setupState) {
+      return {
+        name: "Setup state",
+        status: "skip",
+        detail: "not found (run /setup to track guided progress)",
+      };
+    }
+
+    const blockedSteps = REQUIRED_SETUP_STEPS.filter(
+      (step) => setupState.steps[step] === "blocked",
+    );
+    if (setupState.blockedReason || blockedSteps.length > 0) {
+      const reason =
+        setupState.blockedReason ?? `blocked required step(s): ${blockedSteps.join(", ")}`;
+      return { name: "Setup state", status: "fail", detail: reason };
+    }
+
+    const incompleteRequired = REQUIRED_SETUP_STEPS.filter(
+      (step) => setupState.steps[step] !== "completed",
+    );
+    if (incompleteRequired.length > 0) {
+      return {
+        name: "Setup state",
+        status: "warn",
+        detail: `incomplete required step(s): ${incompleteRequired.join(", ")}`,
+      };
+    }
+
+    return { name: "Setup state", status: "ok", detail: "required guided setup steps completed" };
+  } catch (err) {
+    return {
+      name: "Setup state",
+      status: "warn",
+      detail: `could not read setup-state (${extractErrorDetail(err)})`,
+    };
+  }
+}
+
+async function runOnboardingChecks(): Promise<CheckResult[]> {
+  return [await checkSetupState()];
+}
+
+function getRemediationHint(check: CheckResult): string | undefined {
+  switch (check.name) {
+    case "Home directory":
+    case "Config file":
+    case "Workspace":
+      return "Run `pnpm dev -- onboard` to create the baseline ~/.jinx setup.";
+    case "Node.js":
+      return "Install Node.js 22.12.0+ and rerun `pnpm dev -- doctor --onboarding`.";
+    case "Config validation":
+      return "Fix `~/.jinx/config.yaml` and validate with `pnpm dev -- config validate`.";
+    case "Claude auth":
+      return "Run `claude login` (macOS) or set `ANTHROPIC_API_KEY` in `~/.jinx/.env`.";
+    case "OpenAI embeddings":
+      return "Add `OPENAI_API_KEY` in `~/.jinx/.env`, or keep BM25-only memory search.";
+    case "OpenRouter web search":
+      return "Add `OPENROUTER_API_KEY` in `~/.jinx/.env`, or keep web search disabled.";
+    case "Composio":
+      return "Set `COMPOSIO_API_KEY` and enable `composio.enabled` only if needed.";
+    case "Telegram":
+      if (check.status === "warn") {
+        return "Set `channels.telegram.allowedChatIds` to lock the bot to your account.";
+      }
+      return "Set `channels.telegram.botToken` in config and verify with BotFather.";
+    case "WhatsApp":
+      if (check.detail.includes("no credentials found")) {
+        return "Run `pnpm dev -- gateway` and scan the WhatsApp QR code once.";
+      }
+      if (check.detail.includes("no allowFrom set")) {
+        return "Set `channels.whatsapp.allowFrom` to lock access to your phone number.";
+      }
+      return "Review `channels.whatsapp` settings in `~/.jinx/config.yaml`.";
+    case "Setup state":
+      if (check.status === "skip") {
+        return "Run `/setup` if you want guided setup progress tracking.";
+      }
+      return "Inspect and update state with `pnpm dev -- setup-state show --json`.";
+    default:
+      return undefined;
+  }
+}
+
+function printOnboardingReadiness(allChecks: CheckResult[]): void {
+  const blockers = allChecks.filter((check) => check.status === "fail");
+  const warnings = allChecks.filter((check) => check.status === "warn");
+
+  console.log("  Onboarding readiness:");
+
+  if (blockers.length === 0) {
+    console.log("  [OK] No blockers detected.");
+  } else {
+    console.log(`  [FAIL] ${blockers.length} blocker(s) detected.`);
+    for (const blocker of blockers) {
+      console.log(`  - ${blocker.name}: ${blocker.detail}`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    console.log(`  [WARN] ${warnings.length} warning(s) detected.`);
+    for (const warning of warnings) {
+      console.log(`  - ${warning.name}: ${warning.detail}`);
+    }
+  }
+
+  const needsAction = [...blockers, ...warnings];
+  if (needsAction.length > 0) {
+    console.log("\n  Recommended fixes:");
+    for (const check of needsAction) {
+      const hint = getRemediationHint(check);
+      if (hint) {
+        console.log(`  - ${check.name}: ${hint}`);
+      }
+    }
+  }
+
+  console.log();
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 export const doctorCommand = new Command("doctor")
   .description("Check system health and configuration")
-  .action(async () => {
-    console.log("Jinx Doctor - System Health Check\n");
+  .option(
+    "--onboarding",
+    "show onboarding readiness blockers and recommended fixes (includes live checks)",
+  )
+  .action(async (options: { onboarding?: boolean }) => {
+    const onboardingMode = !!options.onboarding;
+    console.log(
+      onboardingMode
+        ? "Jinx Doctor - Onboarding Readiness Check\n"
+        : "Jinx Doctor - System Health Check\n",
+    );
 
     // Tier 1: Structure
     const structureChecks = runStructureChecks();
-    printSection("Structure", structureChecks);
 
-    // Try to load config for Tier 2 & 3
-    let config: JinxConfig | undefined;
-    try {
-      config = await loadAndValidateConfig();
-    } catch {
-      // Config may not exist or be invalid — continue with what we can check
-    }
+    // Config validation
+    const { config, validationCheck } = await loadConfigWithValidation();
+    structureChecks.push(validationCheck);
+    printSection("Structure", structureChecks);
 
     // Tier 2: API keys (live validation)
     const apiChecks = await runApiChecks(config);
@@ -414,17 +591,31 @@ export const doctorCommand = new Command("doctor")
     const channelChecks = await runChannelChecks(config);
     printSection("Channels & Security", channelChecks);
 
+    // Tier 4: Onboarding mode checks
+    const onboardingChecks = onboardingMode ? await runOnboardingChecks() : [];
+    if (onboardingChecks.length > 0) {
+      printSection("Onboarding State", onboardingChecks);
+    }
+
     // Summary
-    const allChecks = [...structureChecks, ...apiChecks, ...channelChecks];
+    const allChecks = [...structureChecks, ...apiChecks, ...channelChecks, ...onboardingChecks];
     const hasFail = allChecks.some((c) => c.status === "fail");
     const hasWarn = allChecks.some((c) => c.status === "warn");
 
+    if (onboardingMode) {
+      printOnboardingReadiness(allChecks);
+    }
+
     if (hasFail) {
-      console.log("Some checks failed.");
+      console.log(onboardingMode ? "Onboarding is not ready yet." : "Some checks failed.");
     } else if (hasWarn) {
-      console.log("All checks passed (with warnings).");
+      console.log(
+        onboardingMode
+          ? "Onboarding is ready with warnings."
+          : "All checks passed (with warnings).",
+      );
     } else {
-      console.log("All checks passed!");
+      console.log(onboardingMode ? "Onboarding readiness check passed!" : "All checks passed!");
     }
 
     process.exitCode = hasFail ? 1 : 0;

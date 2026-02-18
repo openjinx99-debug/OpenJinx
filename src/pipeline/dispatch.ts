@@ -14,10 +14,13 @@ import { detectInjectionPatterns } from "../infra/security.js";
 import { withTimeout } from "../infra/timeout.js";
 import { createSessionEntry } from "../sessions/store.js";
 import { resolveTranscriptPath } from "../sessions/transcript.js";
+import { resolveTaskDir } from "../workspace/task-dir.js";
 import { classifyTask } from "./classifier.js";
 import { launchDeepWork } from "./deep-work.js";
 import { formatMessageEnvelope } from "./envelope.js";
 import { getSessionLane } from "./lanes.js";
+import { handleMarathonCommand } from "./marathon-commands.js";
+import { launchMarathon } from "./marathon.js";
 import { handleNewSession } from "./session-reset.js";
 import { emitStreamEvent } from "./streaming.js";
 
@@ -60,6 +63,11 @@ export async function dispatchInboundMessage(
     return { text: `Heartbeat requested for agent '${agentId}'` };
   }
 
+  // Handle /marathon commands
+  if (ctx.isCommand && ctx.commandName === "marathon") {
+    return handleMarathonCommand(ctx, deps);
+  }
+
   // Ensure session exists
   let session = sessions.get(sessionKey);
   if (!session) {
@@ -82,6 +90,49 @@ export async function dispatchInboundMessage(
   // Classify whether this needs deep work (skip for commands, short messages, and system tests)
   if (!ctx.isCommand && !ctx.isSystemTest && text.length >= 20) {
     const classification = await classifyTask(text, config.llm.light);
+
+    // Marathon classification — long-running autonomous tasks
+    if (classification.classification === "marathon") {
+      if (config.marathon?.enabled) {
+        logger.info(`Marathon detected: ${classification.reason} session=${sessionKey}`);
+
+        const envelope = formatMessageEnvelope({
+          channel: ctx.channel,
+          from: ctx.senderName,
+          body: text,
+          timestamp: ctx.timestamp,
+          timezone: config.timezone,
+        });
+
+        launchMarathon(
+          {
+            prompt: envelope,
+            originSessionKey: sessionKey,
+            deliveryTarget: {
+              channel: ctx.channel,
+              to: ctx.isGroup ? ctx.groupId! : ctx.senderId,
+            },
+            channel: ctx.channel,
+            senderName: ctx.senderName,
+            senderId: ctx.senderId,
+            groupId: ctx.groupId,
+            media: ctx.media,
+          },
+          deps,
+        );
+
+        return {
+          text: "",
+          target: {
+            channel: ctx.channel,
+            to: ctx.isGroup ? ctx.groupId! : ctx.senderId,
+          },
+        };
+      }
+      // Downgrade marathon to deep when disabled
+      logger.info(`Marathon disabled, downgrading to deep: ${classification.reason}`);
+      classification.classification = "deep";
+    }
 
     if (classification.classification === "deep") {
       logger.info(`Deep work detected: ${classification.reason} session=${sessionKey}`);
@@ -120,6 +171,10 @@ export async function dispatchInboundMessage(
 
   // Enqueue on session lane (max 1 concurrent per session)
   const lane = getSessionLane(sessionKey);
+
+  // Resolve scoped task dir for chat outputs (lazy — created on first write)
+  const taskDir = resolveTaskDir("chat", sessionKey);
+  session.taskDir = taskDir;
 
   const result = await lane.enqueue(async () => {
     // Capture previous activity time INSIDE lane (serialized, no race)
@@ -164,6 +219,7 @@ export async function dispatchInboundMessage(
           groupName: ctx.groupName,
           media: ctx.media,
           isSystemTest: ctx.isSystemTest,
+          workspaceDir: taskDir,
           onDelta: (delta) => {
             emitStreamEvent(sessionKey, { type: "delta", text: delta });
           },

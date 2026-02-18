@@ -117,7 +117,7 @@ High-signal integration suites:
 | `skills/`    | Skills framework — loader, parser, eligibility, dispatch, env overrides   |
 | `tui/`       | Terminal UI — chat log, status bar, stream assembler                      |
 | `types/`     | TypeScript type definitions                                               |
-| `workspace/` | Workspace files — bootstrap, loader, filter, trim, templates              |
+| `workspace/` | Workspace — bootstrap, loader, filter, trim, task-dir, templates          |
 
 ### Key Data Flow
 
@@ -137,6 +137,7 @@ High-signal integration suites:
 - **Claude provider**: uses `stream: false` — full response per turn
 - **Conversation history**: runner loads transcript via `readTranscript()`, passes as `history` to provider. MAX_HISTORY_TURNS=40
 - **Config**: `~/.jinx/config.yaml`, Zod-validated, merged with defaults
+- **Workspace isolation**: Identity files (SOUL.md, etc.) in `~/.jinx/workspace/`, task outputs scoped to `~/.jinx/tasks/{type}-{id}/`
 
 ### Intentional Stubs
 

@@ -297,6 +297,20 @@ describe("createWhatsAppSession", () => {
     expect(options.browser).toEqual(["Ubuntu", "Jinx", "22.04"]);
   });
 
+  it("passes silent logger to Baileys socket", async () => {
+    const events = makeEvents();
+    await createWhatsAppSession("/tmp/auth", events);
+
+    const baileys = await import("baileys");
+    const socketCalls = vi.mocked(baileys.makeWASocket).mock.calls;
+    const lastCall = socketCalls[socketCalls.length - 1];
+    const options = lastCall[0] as { logger?: { child?: () => unknown; level?: string } };
+
+    expect(options.logger).toBeDefined();
+    expect(typeof options.logger?.child).toBe("function");
+    expect(options.logger?.level).toBe("silent");
+  });
+
   it("renders QR code to terminal when received", async () => {
     const onConnectionUpdate = vi.fn();
     await createWhatsAppSession("/tmp/auth", makeEvents({ onConnectionUpdate }));

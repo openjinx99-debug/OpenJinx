@@ -93,6 +93,9 @@ export function createTelegramChannel(
         if (event.type === "delta") {
           writer.sendDelta(event.text);
         } else if (event.type === "final") {
+          if (event.text && !writer.hasContent()) {
+            writer.sendDelta(event.text);
+          }
           writer.finalize().catch((err) => logger.error("Stream finalize failed", err));
           activeWriters.delete(ctx.sessionKey);
           unsub();

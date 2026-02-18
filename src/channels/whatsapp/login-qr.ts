@@ -1,6 +1,7 @@
 import { DisconnectReason, makeWASocket, useMultiFileAuthState } from "baileys";
 import { expandTilde } from "../../infra/home-dir.js";
 import { createLogger } from "../../infra/logger.js";
+import { BAILEYS_SILENT_LOGGER } from "./baileys-logger.js";
 import { renderQrToTerminal } from "./render-qr.js";
 
 const logger = createLogger("whatsapp:qr");
@@ -29,6 +30,7 @@ export async function startQrLogin(params?: QrLoginOptions): Promise<boolean> {
 
   const sock = makeWASocket({
     auth: state,
+    logger: BAILEYS_SILENT_LOGGER as never,
   });
 
   // Persist credentials on update

@@ -9,10 +9,12 @@ import { createTestConfig } from "../__test__/config.js";
 const state: {
   homeDir: string;
   cronRunTurn?: (job: CronJob) => Promise<string>;
+  cronRemove?: (id: string) => boolean;
   telegramReady: boolean;
 } = {
   homeDir: "",
   cronRunTurn: undefined,
+  cronRemove: undefined,
   telegramReady: true,
 };
 
@@ -30,23 +32,41 @@ const runAgentMock = vi.fn().mockResolvedValue({
   model: "test-model",
 });
 
-const deliverOutboundPayloadsMock = vi.fn().mockResolvedValue({
-  channel: "telegram",
-  to: "user-1",
-  textChunks: 1,
-  mediaItems: 0,
-  success: true,
+const deliverWithRetryAndFallbackMock = vi.fn(async (opts: Record<string, any>) => {
+  const channel = opts.deps?.getChannel?.(opts.target?.channel);
+  if (channel?.isReady?.()) {
+    return {
+      success: true,
+      attempts: 1,
+      fallbackDelivered: false,
+    };
+  }
+
+  const fallbackText = opts.terminalText ?? opts.payload?.text ?? "";
+  opts.emitFallback?.("terminal:dm:local", fallbackText);
+  return {
+    success: false,
+    attempts: 3,
+    error: `Channel not ready: ${opts.target?.channel}`,
+    fallbackDelivered: Boolean(opts.emitFallback),
+  };
 });
 
 const deliverHeartbeatEventMock = vi.fn();
 const requestHeartbeatNowMock = vi.fn();
+const isExecutorAliveMock = vi.fn().mockReturnValue(false);
+const resumeMarathonMock = vi.fn().mockResolvedValue(undefined);
+const readCheckpointMock = vi.fn();
+const listCheckpointsMock = vi.fn().mockResolvedValue([]);
 
 class MockCronService {
   start = vi.fn();
   stop = vi.fn();
+  remove = vi.fn(() => true);
 
   constructor(deps: { runTurn: (job: CronJob) => Promise<string> }) {
     state.cronRunTurn = deps.runTurn;
+    state.cronRemove = this.remove;
   }
 }
 
@@ -54,8 +74,9 @@ vi.mock("../agents/runner.js", () => ({
   runAgent: (...args: unknown[]) => runAgentMock(...args),
 }));
 
-vi.mock("../delivery/deliver.js", () => ({
-  deliverOutboundPayloads: (...args: unknown[]) => deliverOutboundPayloadsMock(...args),
+vi.mock("../delivery/reliable.js", () => ({
+  deliverWithRetryAndFallback: (...args: unknown[]) =>
+    deliverWithRetryAndFallbackMock(...args),
 }));
 
 vi.mock("../heartbeat/delivery.js", () => ({
@@ -72,10 +93,21 @@ vi.mock("../cron/service.js", () => ({
   CronService: MockCronService,
 }));
 
+vi.mock("../pipeline/marathon.js", () => ({
+  isExecutorAlive: (...args: unknown[]) => isExecutorAliveMock(...args),
+  resumeMarathon: (...args: unknown[]) => resumeMarathonMock(...args),
+}));
+
+vi.mock("../pipeline/checkpoint.js", () => ({
+  readCheckpoint: (...args: unknown[]) => readCheckpointMock(...args),
+  listCheckpoints: (...args: unknown[]) => listCheckpointsMock(...args),
+}));
+
 vi.mock("../infra/home-dir.js", () => ({
   resolveHomeDir: () => state.homeDir,
   expandTilde: (input: string) => input.replace(/^~(?=\/|$)/, state.homeDir),
   ensureHomeDir: () => state.homeDir,
+  homeRelative: (rel: string) => path.join(state.homeDir, rel),
 }));
 
 vi.mock("../gateway/server.js", () => ({
@@ -173,7 +205,12 @@ describe("startup cron routing integration", () => {
     vi.clearAllMocks();
     state.homeDir = mkdtempSync(path.join(tmpdir(), "jinx-cron-routing-"));
     state.cronRunTurn = undefined;
+    state.cronRemove = undefined;
     state.telegramReady = true;
+    isExecutorAliveMock.mockReturnValue(false);
+    resumeMarathonMock.mockResolvedValue(undefined);
+    readCheckpointMock.mockResolvedValue(undefined);
+    listCheckpointsMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -195,9 +232,11 @@ describe("startup cron routing integration", () => {
       }),
     );
 
-    expect(deliverOutboundPayloadsMock).toHaveBeenCalledWith(
+    expect(deliverWithRetryAndFallbackMock).toHaveBeenCalledWith(
       expect.objectContaining({
         target: { channel: "telegram", to: "user-1" },
+        source: "cron",
+        reason: "isolated-cron",
         payload: expect.objectContaining({
           text: expect.stringContaining("⏰ [daily-summary] generated cron output"),
         }),
@@ -214,7 +253,7 @@ describe("startup cron routing integration", () => {
 
     await state.cronRunTurn!(makeJob());
 
-    expect(deliverOutboundPayloadsMock).not.toHaveBeenCalled();
+    expect(deliverWithRetryAndFallbackMock).toHaveBeenCalled();
     expect(deliverHeartbeatEventMock).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "heartbeat",
@@ -241,7 +280,116 @@ describe("startup cron routing integration", () => {
     expect(result).toBe("enqueued");
     expect(requestHeartbeatNowMock).toHaveBeenCalledWith("default", "cron-event");
     expect(runAgentMock).not.toHaveBeenCalled();
-    expect(deliverOutboundPayloadsMock).not.toHaveBeenCalled();
+    expect(deliverWithRetryAndFallbackMock).not.toHaveBeenCalled();
+
+    await boot.stop();
+  });
+
+  it("watchdog removes stale cron job when checkpoint is missing", async () => {
+    const boot = await bootGateway(createBootConfig());
+    expect(state.cronRunTurn).toBeDefined();
+    expect(state.cronRemove).toBeDefined();
+
+    readCheckpointMock.mockResolvedValueOnce(undefined);
+    const result = await state.cronRunTurn!(
+      makeJob({
+        id: "watchdog-1",
+        payload: {
+          prompt: "watchdog",
+          isolated: true,
+          marathonWatchdog: { taskId: "marathon-abc12345" },
+        },
+      }),
+    );
+
+    expect(result).toBe("watchdog stale removed");
+    expect(state.cronRemove!).toHaveBeenCalledWith("watchdog-1");
+    expect(resumeMarathonMock).not.toHaveBeenCalled();
+
+    await boot.stop();
+  });
+
+  it("watchdog removes stale cron job when checkpoint is terminal", async () => {
+    const boot = await bootGateway(createBootConfig());
+    expect(state.cronRunTurn).toBeDefined();
+    expect(state.cronRemove).toBeDefined();
+
+    readCheckpointMock.mockResolvedValueOnce({ status: "completed" });
+    const result = await state.cronRunTurn!(
+      makeJob({
+        id: "watchdog-2",
+        payload: {
+          prompt: "watchdog",
+          isolated: true,
+          marathonWatchdog: { taskId: "marathon-abc12345" },
+        },
+      }),
+    );
+
+    expect(result).toBe("watchdog stale removed");
+    expect(state.cronRemove!).toHaveBeenCalledWith("watchdog-2");
+    expect(resumeMarathonMock).not.toHaveBeenCalled();
+
+    await boot.stop();
+  });
+
+  it("watchdog resumes when checkpoint is resumable", async () => {
+    const boot = await bootGateway(createBootConfig());
+    expect(state.cronRunTurn).toBeDefined();
+    expect(state.cronRemove).toBeDefined();
+
+    readCheckpointMock.mockResolvedValueOnce({ status: "paused" });
+    const result = await state.cronRunTurn!(
+      makeJob({
+        id: "watchdog-3",
+        payload: {
+          prompt: "watchdog",
+          isolated: true,
+          marathonWatchdog: { taskId: "marathon-abc12345" },
+        },
+      }),
+    );
+
+    expect(result).toBe("watchdog ok");
+    expect(resumeMarathonMock).toHaveBeenCalledWith(
+      "marathon-abc12345",
+      expect.objectContaining({
+        config: expect.any(Object),
+        sessions: expect.any(Object),
+        cronService: expect.any(Object),
+      }),
+    );
+    expect(state.cronRemove!).not.toHaveBeenCalled();
+
+    await boot.stop();
+  });
+
+  it("watchdog removes stale cron job when resume reports marathon not found", async () => {
+    const boot = await bootGateway(createBootConfig());
+    expect(state.cronRunTurn).toBeDefined();
+    expect(state.cronRemove).toBeDefined();
+
+    readCheckpointMock.mockResolvedValueOnce({ status: "executing" });
+    resumeMarathonMock.mockRejectedValueOnce(new Error("Marathon not found: marathon-abc12345"));
+    const result = await state.cronRunTurn!(
+      makeJob({
+        id: "watchdog-4",
+        payload: {
+          prompt: "watchdog",
+          isolated: true,
+          marathonWatchdog: { taskId: "marathon-abc12345" },
+        },
+      }),
+    );
+
+    expect(result).toBe("watchdog stale removed");
+    expect(resumeMarathonMock).toHaveBeenCalledWith(
+      "marathon-abc12345",
+      expect.objectContaining({
+        cronService: expect.any(Object),
+      }),
+    );
+    expect(state.cronRemove!).toHaveBeenCalledWith("watchdog-4");
 
     await boot.stop();
   });

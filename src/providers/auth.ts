@@ -23,7 +23,8 @@ export function resolveAuth(): ClaudeAuth {
   }
 
   throw new Error(
-    "No Claude authentication found. Set CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or run `claude login` to store credentials in the Keychain.",
+    "No Claude authentication found. Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in ~/.jinx/.env, " +
+      "or run `claude login` to store credentials in the Keychain.",
   );
 }
 

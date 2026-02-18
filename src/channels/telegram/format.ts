@@ -28,12 +28,9 @@ function isSafeUrl(url: string): boolean {
     const parsed = new URL(url);
     return SAFE_SCHEMES.has(parsed.protocol);
   } catch {
-    const colonIndex = url.indexOf(":");
-    if (colonIndex === -1) {
-      return true;
-    }
-    const slashIndex = url.indexOf("/");
-    return slashIndex !== -1 && slashIndex < colonIndex;
+    // Relative paths (e.g. "PROGRESS.md", "src/index.ts") are not valid
+    // Telegram links — reject anything that isn't an absolute URL.
+    return false;
   }
 }
 
