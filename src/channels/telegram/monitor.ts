@@ -5,6 +5,7 @@ const logger = createLogger("telegram:monitor");
 
 const POLL_INTERVAL_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
+const ERROR_LOG_SUMMARY_INTERVAL_MS = 60_000;
 
 /**
  * Monitors Telegram via long polling with exponential backoff on errors.
@@ -14,6 +15,11 @@ export class TelegramMonitor {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private backoffMs = POLL_INTERVAL_MS;
   private offset = 0;
+  private consecutiveErrors = 0;
+  private firstErrorAt = 0;
+  private lastErrorLogAt = 0;
+  private suppressedErrorLogs = 0;
+  private lastErrorSignature = "";
 
   constructor(
     private readonly botToken: string,
@@ -26,6 +32,11 @@ export class TelegramMonitor {
     }
     this.running = true;
     this.backoffMs = POLL_INTERVAL_MS;
+    this.consecutiveErrors = 0;
+    this.firstErrorAt = 0;
+    this.lastErrorLogAt = 0;
+    this.suppressedErrorLogs = 0;
+    this.lastErrorSignature = "";
     logger.info("Telegram monitor started");
     this.schedulePoll();
   }
@@ -36,6 +47,11 @@ export class TelegramMonitor {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
+    this.consecutiveErrors = 0;
+    this.firstErrorAt = 0;
+    this.lastErrorLogAt = 0;
+    this.suppressedErrorLogs = 0;
+    this.lastErrorSignature = "";
     logger.info("Telegram monitor stopped");
   }
 
@@ -48,8 +64,9 @@ export class TelegramMonitor {
       try {
         await this.poll();
         this.backoffMs = POLL_INTERVAL_MS; // reset on success
+        this.logRecoveryIfNeeded();
       } catch (err) {
-        logger.warn(`Poll error, backing off ${this.backoffMs}ms`, err);
+        this.logPollError(err);
         this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
       }
       this.schedulePoll();
@@ -90,4 +107,62 @@ export class TelegramMonitor {
       }
     }
   }
+
+  private logRecoveryIfNeeded(): void {
+    if (this.consecutiveErrors === 0) {
+      return;
+    }
+    const durationMs = this.firstErrorAt > 0 ? Date.now() - this.firstErrorAt : 0;
+    const summary =
+      this.suppressedErrorLogs > 0
+        ? ` (suppressed ${this.suppressedErrorLogs} repeated errors)`
+        : "";
+    logger.info(
+      `Telegram polling recovered after ${this.consecutiveErrors} error(s) over ${Math.round(durationMs / 1000)}s${summary}`,
+    );
+    this.consecutiveErrors = 0;
+    this.firstErrorAt = 0;
+    this.lastErrorLogAt = 0;
+    this.suppressedErrorLogs = 0;
+    this.lastErrorSignature = "";
+  }
+
+  private logPollError(err: unknown): void {
+    const now = Date.now();
+    const signature = normalizeError(err);
+    this.consecutiveErrors++;
+    if (this.firstErrorAt === 0) {
+      this.firstErrorAt = now;
+    }
+
+    const signatureChanged = signature !== this.lastErrorSignature;
+    const shouldLog =
+      this.consecutiveErrors === 1 ||
+      signatureChanged ||
+      now - this.lastErrorLogAt >= ERROR_LOG_SUMMARY_INTERVAL_MS;
+    if (!shouldLog) {
+      this.suppressedErrorLogs++;
+      return;
+    }
+
+    const summary =
+      this.suppressedErrorLogs > 0
+        ? ` (suppressed ${this.suppressedErrorLogs} repeated errors)`
+        : "";
+    logger.warn(
+      `Poll error, backing off ${this.backoffMs}ms (attempt ${this.consecutiveErrors}): ${signature}${summary}`,
+    );
+    this.lastErrorLogAt = now;
+    this.suppressedErrorLogs = 0;
+    this.lastErrorSignature = signature;
+  }
+}
+
+function normalizeError(err: unknown): string {
+  if (err instanceof Error) {
+    const name = err.name || "Error";
+    const message = err.message || "unknown";
+    return `${name}: ${message}`;
+  }
+  return String(err);
 }

@@ -24,6 +24,11 @@ export class TelegramStreamWriter {
     private readonly chatId: string | number,
   ) {}
 
+  /** Whether the buffer has any content (used to avoid overwriting deltas with final text). */
+  hasContent(): boolean {
+    return this.buffer.length > 0;
+  }
+
   /** Append a text delta and schedule an edit. */
   sendDelta(text: string): void {
     this.buffer += text;

@@ -35,6 +35,7 @@ import { getComposioToolDefinitions } from "./tools/composio-tools.js";
 import { getCoreToolDefinitions } from "./tools/core-tools.js";
 import { getCronToolDefinitions } from "./tools/cron-tools.js";
 import { getExecToolDefinitions } from "./tools/exec-tools.js";
+import { getMarathonToolDefinitions } from "./tools/marathon-tools.js";
 import { aggregateTools } from "./tools/mcp-bridge.js";
 import { getMemoryToolDefinitions } from "./tools/memory-tools.js";
 import { getSessionToolDefinitions } from "./tools/session-tools.js";
@@ -68,6 +69,10 @@ export interface RunAgentOptions {
   groupName?: string;
   /** Whether this is a system test turn — skips memory tools and RAG. */
   isSystemTest?: boolean;
+  /** Override the workspace directory for tool scoping (e.g., marathon task-specific workspace). */
+  workspaceDir?: string;
+  /** Override the identity directory (where SOUL.md etc. live). Defaults to agent.workspace. */
+  identityDir?: string;
 }
 
 /**
@@ -96,11 +101,14 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
   logger.info(`Agent turn: agent=${agent.id} model=${modelId} session=${sessionKey}`);
 
   // 2. Compute resolved directories
-  const workspaceDir = expandTilde(agent.workspace);
+  // Identity dir: where SOUL.md etc. live (always the agent's workspace)
+  const identityDir = options.identityDir ?? expandTilde(agent.workspace);
+  // Task dir: where file tools write (scoped per task, or defaults to identity)
+  const workspaceDir = options.workspaceDir ?? identityDir;
   const memoryDir = expandTilde(config.memory.dir);
 
-  // 3. Load and filter workspace files
-  const allFiles = await loadWorkspaceFiles(agent.workspace);
+  // 3. Load and filter workspace files from IDENTITY dir (not task dir)
+  const allFiles = await loadWorkspaceFiles(identityDir);
   const filtered = filterFilesForSession(allFiles, sessionType);
   const trimmed = trimWorkspaceFiles(filtered);
 
@@ -120,6 +128,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
       options.channel,
       sessionType,
       options.isSystemTest,
+      identityDir,
     );
 
   // 5. Load skills and build snapshot
@@ -137,6 +146,8 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
     model: modelString,
     workspaceDir,
     memoryDir,
+    // Show identity dir in metadata when it differs from task workspace
+    identityDir: identityDir !== workspaceDir ? identityDir : undefined,
     timezone: config.timezone,
     channel: options.channel,
     senderName: options.senderName,
@@ -250,7 +261,9 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
     ? ("heartbeat" as const)
     : sessionKey.startsWith("cron:")
       ? ("cron" as const)
-      : ("chat" as const);
+      : sessionKey.startsWith("marathon:")
+        ? ("marathon" as const)
+        : ("chat" as const);
   logTurnMetric({
     timestamp: Date.now(),
     sessionKey,
@@ -364,8 +377,12 @@ export function assembleDefaultTools(
   sessionType?: string,
   /** Whether to exclude memory tools (system test isolation). */
   isSystemTest?: boolean,
+  /** Identity directory (where SOUL.md etc. live). Included in allowedDirs when provided. */
+  identityDir?: string,
 ): AgentToolDefinition[] {
-  const allowedDirs = [workspaceDir, memoryDir];
+  const allowedDirs = [
+    ...new Set([workspaceDir, ...(identityDir ? [identityDir] : []), memoryDir]),
+  ];
 
   const core = getCoreToolDefinitions({ allowedDirs, sessionType });
   const memory = isSystemTest ? [] : getMemoryToolDefinitions({ memoryDir, searchManager });
@@ -446,13 +463,19 @@ export function assembleDefaultTools(
       })
     : [];
 
+  // Marathon tools — available when running inside a marathon chunk session
+  const marathonTaskId = sessionKey?.startsWith("marathon:")
+    ? sessionKey.replace("marathon:", "marathon-")
+    : undefined;
+  const marathon = marathonTaskId ? getMarathonToolDefinitions({ taskId: marathonTaskId }) : [];
+
   return aggregateTools(
     core,
     memory,
     channel,
     cron,
     [],
-    [...web, ...webFetch, ...exec],
+    [...web, ...webFetch, ...exec, ...marathon],
     [...session, ...spawn],
     composio,
   );

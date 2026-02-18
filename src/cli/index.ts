@@ -36,7 +36,7 @@ export function createCli(): typeof program {
   // Lazy-loaded commands for startup performance
   program
     .command("onboard")
-    .description("First-time setup wizard")
+    .description("Bootstrap home directory, config, and workspace templates")
     .action(async () => {
       const { onboardCommand } = await import("./commands/onboard.js");
       await onboardCommand.parseAsync(process.argv.slice(2));
@@ -94,6 +94,55 @@ export function createCli(): typeof program {
         args.push("-s", opts.session);
       }
       await sendCommand.parseAsync(args);
+    });
+
+  program
+    .command("delivery")
+    .description("Inspect and replay dead-letter deliveries")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async () => {
+      const { deliveryCommand } = await import("./commands/delivery.js");
+      const deliveryIndex = process.argv.findIndex((arg) => arg === "delivery");
+      const forwarded = deliveryIndex >= 0 ? process.argv.slice(deliveryIndex + 1) : [];
+      await deliveryCommand.parseAsync(["node", "delivery", ...forwarded]);
+    });
+
+  program
+    .command("setup-state")
+    .description("Manage onboarding setup-state")
+    .argument("[action]", "init | show | set-name | set-step | set-block | clear-block")
+    .argument("[arg1]", "arg for selected action")
+    .argument("[arg2]", "arg for selected action")
+    .option("-n, --name <assistantName>", "assistant name (init)")
+    .option("--reason <text>", "blocked reason / note")
+    .option("--clear-reason", "clear blocked reason")
+    .option("--json", "output JSON")
+    .action(async (action, arg1, arg2, opts) => {
+      const { setupStateCommand } = await import("./commands/setup-state.js");
+      const args = ["node", "setup-state"];
+      if (action) {
+        args.push(action);
+      }
+      if (arg1) {
+        args.push(arg1);
+      }
+      if (arg2) {
+        args.push(arg2);
+      }
+      if (opts.name) {
+        args.push("--name", opts.name);
+      }
+      if (opts.reason) {
+        args.push("--reason", opts.reason);
+      }
+      if (opts.clearReason) {
+        args.push("--clear-reason");
+      }
+      if (opts.json) {
+        args.push("--json");
+      }
+      await setupStateCommand.parseAsync(args);
     });
 
   program

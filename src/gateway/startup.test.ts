@@ -58,6 +58,7 @@ vi.mock("../infra/home-dir.js", () => ({
   resolveHomeDir: () => "/tmp/jinx-test",
   expandTilde: (p: string) => p.replace("~", "/tmp/jinx-test"),
   ensureHomeDir: () => "/tmp/jinx-test",
+  homeRelative: (rel: string) => `/tmp/jinx-test/${rel}`,
 }));
 
 // ── Imports (after mocks) ───────────────────────────────────────────────────

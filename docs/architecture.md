@@ -241,6 +241,7 @@ CronService
 2. loadAndValidateConfig()   — Parse + validate ~/.jinx/config.yaml
 3. setLogLevel()             — Wire config.logging.level
 4. ensureWorkspace()         — Create ~/.jinx/workspace/ structure
+4a. ensureTasksRoot()        — Create ~/.jinx/tasks/ (task output root)
 5. mkdir memoryDir           — Create ~/.jinx/memory/
 6. MemorySearchManager       — BM25 + optional vector search
 7. createContainerManager()  — Apple Container sandbox (if ready)
@@ -255,6 +256,31 @@ CronService
 16. SessionReaper            — Sweeps cron: and deepwork: sessions
 17. startSkillRefresh()      — Hot-reload skill watcher
 18. Memory wiring validation — Log status
+```
+
+## Directory Layout
+
+```
+~/.jinx/
+├── .env                   # API keys
+├── config.yaml            # Jinx configuration (Zod-validated)
+├── workspace/             # Agent identity files (persistent)
+│   ├── SOUL.md
+│   ├── IDENTITY.md
+│   ├── USER.md
+│   ├── MEMORY.md
+│   ├── TOOLS.md
+│   ├── AGENTS.md
+│   ├── HEARTBEAT.md
+│   └── BOOTSTRAP.md
+├── tasks/                 # Scoped task outputs (per-session, cleanable)
+│   ├── chat-telegram-dm-12345/
+│   ├── deepwork-a1b2c3d4/
+│   └── marathon-e5f6g7h8/
+├── marathon/              # Checkpoint JSON files
+├── sessions/              # JSONL transcripts
+├── memory/                # Daily logs + embedding index
+└── skills/                # Custom skill definitions
 ```
 
 ## What's Live vs. Stubbed

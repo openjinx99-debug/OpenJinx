@@ -5,11 +5,13 @@ import { SessionReaper } from "./reaper.js";
 vi.mock("node:fs/promises", () => ({
   default: {
     unlink: vi.fn(async () => {}),
+    rm: vi.fn(async () => {}),
   },
 }));
 
 import fs from "node:fs/promises";
 const mockedUnlink = vi.mocked(fs.unlink);
+const mockedRm = vi.mocked(fs.rm);
 
 function makeSessionEntry(overrides: Partial<SessionEntry> & { sessionKey: string }): SessionEntry {
   const now = Date.now();
@@ -145,6 +147,37 @@ describe("SessionReaper", () => {
     await reaper.sweep(now);
 
     expect(store.save).not.toHaveBeenCalled();
+  });
+
+  it("deletes task directory for reaped sessions with taskDir", async () => {
+    const session = makeSessionEntry({
+      sessionKey: "deepwork:a1b2c3d4",
+      lastActiveAt: oldTime,
+      taskDir: "/tmp/tasks/deepwork-a1b2c3d4",
+    });
+    const store = makeStore([session]);
+    const reaper = new SessionReaper(store, { prefixes: ["deepwork:"] });
+
+    await reaper.sweep(now);
+
+    expect(mockedRm).toHaveBeenCalledWith("/tmp/tasks/deepwork-a1b2c3d4", {
+      recursive: true,
+      force: true,
+    });
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("skips task dir cleanup when taskDir is not set", async () => {
+    const session = makeSessionEntry({
+      sessionKey: "cron:agent-1:123",
+      lastActiveAt: oldTime,
+    });
+    const store = makeStore([session]);
+    const reaper = new SessionReaper(store, { prefixes: ["cron:"] });
+
+    await reaper.sweep(now);
+
+    expect(mockedRm).not.toHaveBeenCalled();
   });
 
   it("start/stop timer lifecycle", () => {

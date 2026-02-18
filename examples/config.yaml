@@ -4,9 +4,8 @@
 
 # LLM settings
 llm:
-  # Auth: "oauth" reads from macOS Keychain (requires Claude Code logged in),
-  # "api_key" uses ANTHROPIC_API_KEY env var.
-  # authMode: oauth
+  # Claude auth is resolved from env vars (including ~/.jinx/.env) first,
+  # then macOS Keychain OAuth if Claude Code is logged in.
 
   # Model tiers
   brain: sonnet # Primary model: opus | sonnet | haiku
@@ -39,13 +38,13 @@ channels:
     # secretToken: "your-secret"    # Verify webhook requests
     # allowedChatIds:               # Restrict to specific chats
     #   - 123456789
-    # dmPolicy: allow               # "allow" or "deny"
-    # groupPolicy: deny             # "allow" or "deny"
+    # dmPolicy: allowlist           # "open" | "allowlist" | "disabled"
+    # groupPolicy: disabled         # "enabled" | "disabled"
 
   whatsapp:
     enabled: false
-    # dmPolicy: allow
-    # groupPolicy: deny
+    # dmPolicy: allowlist           # "open" | "allowlist" | "disabled"
+    # groupPolicy: disabled         # "enabled" | "disabled"
 
 # Skills
 skills:

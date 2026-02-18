@@ -77,6 +77,19 @@ export class SessionReaper {
         }
       }
 
+      // Delete task output directory if it exists
+      if (session.taskDir) {
+        try {
+          await fs.rm(session.taskDir, { recursive: true, force: true });
+          logger.debug(`Deleted task dir: ${session.taskDir}`);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT") {
+            logger.warn(`Failed to delete task dir ${session.taskDir}: ${code ?? err}`);
+          }
+        }
+      }
+
       this.store.delete(session.sessionKey);
       reaped++;
       logger.debug(`Reaped session: ${session.sessionKey} (age=${Math.round(age / 60_000)}min)`);

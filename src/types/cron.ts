@@ -37,6 +37,8 @@ export interface CronPayload {
   prompt: string;
   /** Whether to create an isolated session (vs. enqueue to heartbeat). */
   isolated: boolean;
+  /** If set, this is a marathon watchdog job. */
+  marathonWatchdog?: { taskId: string };
 }
 
 /** Where to deliver cron results. */

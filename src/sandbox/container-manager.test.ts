@@ -581,6 +581,394 @@ describe("container-manager", () => {
     await mgr.dispose();
   });
 
+  // --- Marathon lifecycle tests ---
+
+  it("sweepIdle skips persistent containers", async () => {
+    const shortIdleConfig: SandboxConfig = {
+      ...defaultConfig,
+      idleTimeoutMs: 1000,
+    };
+
+    let stopCalled = false;
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "stop") {
+        stopCalled = true;
+      }
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(shortIdleConfig);
+    await mgr.getOrCreate("persistent-test", "/test/workspace");
+
+    // Promote to persistent
+    mgr.promote("persistent-test");
+
+    // Advance time past idle timeout
+    vi.advanceTimersByTime(2000);
+    mgr.sweepIdle();
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Should NOT have been stopped
+    expect(stopCalled).toBe(false);
+
+    await mgr.dispose();
+  });
+
+  it("sweepIdle still evicts ephemeral containers past idle timeout", async () => {
+    const shortIdleConfig: SandboxConfig = {
+      ...defaultConfig,
+      idleTimeoutMs: 1000,
+    };
+
+    let stopCalled = false;
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "stop") {
+        stopCalled = true;
+      }
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(shortIdleConfig);
+    await mgr.getOrCreate("ephemeral-test", "/test/workspace");
+
+    vi.advanceTimersByTime(2000);
+    mgr.sweepIdle();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(stopCalled).toBe(true);
+
+    await mgr.dispose();
+  });
+
+  it("promote() changes lifecycle to persistent", async () => {
+    mockSpawn.mockImplementation(() => {
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    const session = await mgr.getOrCreate("promote-test", "/test/workspace");
+    expect(session.lifecycle).toBe("ephemeral");
+
+    mgr.promote("promote-test");
+
+    const inspected = await mgr.inspect("promote-test");
+    expect(inspected?.lifecycle).toBe("persistent");
+
+    await mgr.dispose();
+  });
+
+  it("demote() changes lifecycle to ephemeral", async () => {
+    mockSpawn.mockImplementation(() => {
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    await mgr.getOrCreate("demote-test", "/test/workspace");
+    mgr.promote("demote-test");
+    mgr.demote("demote-test");
+
+    const inspected = await mgr.inspect("demote-test");
+    expect(inspected?.lifecycle).toBe("ephemeral");
+
+    await mgr.dispose();
+  });
+
+  it("inspect() returns alive + uptimeMs for running container", async () => {
+    mockSpawn.mockImplementation((_bin: string, _args: string[]) => {
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    await mgr.getOrCreate("inspect-test", "/test/workspace");
+
+    const result = await mgr.inspect("inspect-test");
+    expect(result).toBeDefined();
+    expect(result!.alive).toBe(true);
+    expect(result!.uptimeMs).toBeGreaterThanOrEqual(0);
+    expect(result!.containerId).toMatch(/^jinx-/);
+
+    await mgr.dispose();
+  });
+
+  it("inspect() returns undefined for unknown session", async () => {
+    const mgr = createContainerManager(defaultConfig);
+    const result = await mgr.inspect("no-such-session");
+    expect(result).toBeUndefined();
+    await mgr.dispose();
+  });
+
+  it("getOrCreate defaults to lifecycle ephemeral", async () => {
+    mockSpawn.mockImplementation(() => {
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    const session = await mgr.getOrCreate("default-lifecycle", "/test/workspace");
+    expect(session.lifecycle).toBe("ephemeral");
+
+    await mgr.dispose();
+  });
+
+  it("reattach registers alive container in managed map as persistent", async () => {
+    mockSpawn.mockImplementation((_bin: string, _args: string[]) => {
+      // All exec calls succeed (liveness check)
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    const success = await mgr.reattach(
+      "jinx-existing-abc12345",
+      "reattach-test",
+      "/test/workspace",
+    );
+    expect(success).toBe(true);
+
+    const inspected = await mgr.inspect("reattach-test");
+    expect(inspected).toBeDefined();
+    expect(inspected!.alive).toBe(true);
+    expect(inspected!.lifecycle).toBe("persistent");
+
+    await mgr.dispose();
+  });
+
+  it("reattach returns false for dead container", async () => {
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "exec" && args.includes("true")) {
+        // Liveness check fails
+        const child = createMockChild(1);
+        child._autoClose();
+        return child;
+      }
+      const child = createMockChild(0);
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    const success = await mgr.reattach("jinx-dead-abc12345", "dead-reattach", "/test/workspace");
+    expect(success).toBe(false);
+
+    await mgr.dispose();
+  });
+
+  it("cleanupOrphans skips excluded container IDs", async () => {
+    const removedIds: string[] = [];
+    let lsCallCount = 0;
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "ls") {
+        lsCallCount++;
+        // First call is auto-cleanup (empty results), second is our explicit call
+        const stdout = lsCallCount === 1 ? "" : "jinx-keep-123\njinx-remove-456\n";
+        const child = createMockChild(0, stdout);
+        child._autoClose();
+        return child;
+      }
+      if (args[0] === "rm") {
+        removedIds.push(args[2]);
+      }
+      const child = createMockChild(0);
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    // Wait for auto-cleanup to finish
+    await vi.advanceTimersByTimeAsync(10);
+    await mgr.cleanupOrphans(["jinx-keep-123"]);
+
+    expect(removedIds).toContain("jinx-remove-456");
+    expect(removedIds).not.toContain("jinx-keep-123");
+
+    await mgr.dispose();
+  });
+
+  it("cleanupOrphans removes non-excluded orphans", async () => {
+    const removedIds: string[] = [];
+    let lsCallCount = 0;
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "ls") {
+        lsCallCount++;
+        const stdout = lsCallCount === 1 ? "" : "jinx-orphan-111\njinx-orphan-222\n";
+        const child = createMockChild(0, stdout);
+        child._autoClose();
+        return child;
+      }
+      if (args[0] === "rm") {
+        removedIds.push(args[2]);
+      }
+      const child = createMockChild(0);
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    await vi.advanceTimersByTimeAsync(10);
+    await mgr.cleanupOrphans();
+
+    expect(removedIds).toContain("jinx-orphan-111");
+    expect(removedIds).toContain("jinx-orphan-222");
+
+    await mgr.dispose();
+  });
+
+  it("startContainer passes --cpus and --memory flags when configured", async () => {
+    const resourceConfig: SandboxConfig = {
+      ...defaultConfig,
+      cpus: 4,
+      memoryGB: 8,
+    };
+
+    const spawnCalls: { args: string[] }[] = [];
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      spawnCalls.push({ args });
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(resourceConfig);
+    await mgr.getOrCreate("resource-test", "/test/workspace");
+
+    const runCall = spawnCalls.find((c) => c.args[0] === "run");
+    expect(runCall).toBeDefined();
+    expect(runCall!.args).toContain("--cpus");
+    expect(runCall!.args).toContain("4");
+    expect(runCall!.args).toContain("--memory");
+    expect(runCall!.args).toContain("8g");
+
+    await mgr.dispose();
+  });
+
+  // --- Retention tests ---
+
+  it("setRetention sets retentionUntil on container", async () => {
+    mockSpawn.mockImplementation(() => {
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    await mgr.getOrCreate("retention-test", "/test/workspace");
+    mgr.promote("retention-test");
+
+    mgr.setRetention("retention-test", 60_000);
+
+    const inspected = await mgr.inspect("retention-test");
+    expect(inspected).toBeDefined();
+    expect(inspected!.lifecycle).toBe("persistent");
+
+    await mgr.dispose();
+  });
+
+  it("sweepIdle destroys persistent container after retentionUntil passes", async () => {
+    const shortIdleConfig: SandboxConfig = {
+      ...defaultConfig,
+      idleTimeoutMs: 1000,
+    };
+
+    let stopCalled = false;
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "stop") {
+        stopCalled = true;
+      }
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(shortIdleConfig);
+    await mgr.getOrCreate("retention-expire-test", "/test/workspace");
+    mgr.promote("retention-expire-test");
+
+    // Set retention for 1 second
+    mgr.setRetention("retention-expire-test", 1000);
+
+    // Advance past retention
+    vi.advanceTimersByTime(2000);
+    mgr.sweepIdle();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(stopCalled).toBe(true);
+
+    await mgr.dispose();
+  });
+
+  it("sweepIdle keeps persistent container alive before retentionUntil", async () => {
+    const shortIdleConfig: SandboxConfig = {
+      ...defaultConfig,
+      idleTimeoutMs: 1000,
+    };
+
+    let stopCalled = false;
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "stop") {
+        stopCalled = true;
+      }
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(shortIdleConfig);
+    await mgr.getOrCreate("retention-active-test", "/test/workspace");
+    mgr.promote("retention-active-test");
+
+    // Set retention for 1 hour
+    mgr.setRetention("retention-active-test", 3600_000);
+
+    // Advance only 2 seconds (well within retention)
+    vi.advanceTimersByTime(2000);
+    mgr.sweepIdle();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(stopCalled).toBe(false);
+
+    await mgr.dispose();
+  });
+
+  it("startContainer omits resource flags when not configured", async () => {
+    const spawnCalls: { args: string[] }[] = [];
+
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      spawnCalls.push({ args });
+      const child = createMockChild(0, "ready\n");
+      child._autoClose();
+      return child;
+    });
+
+    const mgr = createContainerManager(defaultConfig);
+    await mgr.getOrCreate("no-resource-test", "/test/workspace");
+
+    const runCall = spawnCalls.find((c) => c.args[0] === "run");
+    expect(runCall).toBeDefined();
+    expect(runCall!.args).not.toContain("--cpus");
+    expect(runCall!.args).not.toContain("--memory");
+
+    await mgr.dispose();
+  });
+
   it("shellQuote is applied to workDir in exec args", async () => {
     const spawnCalls: { args: string[] }[] = [];
 

@@ -36,6 +36,8 @@ export interface SessionEntry {
   lastHeartbeatSentAt?: number;
   /** If this is a subagent session, the parent session key that spawned it. */
   parentSessionKey?: string;
+  /** Task output directory (for reaper cleanup). */
+  taskDir?: string;
 }
 
 /** Transcript turn entry (one line of JSONL). */

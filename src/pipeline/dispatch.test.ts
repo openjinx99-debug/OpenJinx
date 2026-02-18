@@ -38,6 +38,20 @@ vi.mock("./deep-work.js", () => ({
   launchDeepWork: vi.fn(),
 }));
 
+vi.mock("./marathon.js", () => ({
+  launchMarathon: vi.fn(),
+}));
+
+vi.mock("./marathon-commands.js", () => ({
+  handleMarathonCommand: vi.fn().mockResolvedValue({ text: "marathon command response" }),
+}));
+
+vi.mock("../workspace/task-dir.js", () => ({
+  resolveTaskDir: vi.fn(
+    (type: string, id: string) => `/tmp/tasks/${type}-${id.replace(/:/g, "-")}`,
+  ),
+}));
+
 const TS = new Date("2026-02-14T12:40:00Z").getTime();
 
 const makeMsgContext = (overrides?: Partial<MsgContext>): MsgContext => ({
@@ -167,6 +181,29 @@ describe("dispatchInboundMessage – error handling", () => {
   });
 });
 
+// ── Task directory scoping ───────────────────────────────────────────
+
+describe("dispatchInboundMessage – task dir scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes scoped taskDir as workspaceDir to runAgent", async () => {
+    const { runAgent } = await import("../agents/runner.js");
+    const { resolveTaskDir } = await import("../workspace/task-dir.js");
+    const { dispatchInboundMessage } = await import("./dispatch.js");
+
+    const config = createTestConfig();
+    const sessions = createMockSessionStore();
+
+    await dispatchInboundMessage(makeMsgContext(), { config, sessions });
+
+    expect(resolveTaskDir).toHaveBeenCalledWith("chat", "test:dm:user1");
+    const call = vi.mocked(runAgent).mock.calls[0][0];
+    expect(call.workspaceDir).toMatch(/\/tasks\/chat-/);
+  });
+});
+
 // ── Injection detection ─────────────────────────────────────────────
 
 describe("dispatchInboundMessage – injection detection", () => {
@@ -287,5 +324,133 @@ describe("dispatchInboundMessage – /wake command", () => {
 
     expect(requestHeartbeatNow).toHaveBeenCalledWith("myagent", "manual");
     expect(result.text).toContain("myagent");
+  });
+});
+
+// ── Marathon dispatch ─────────────────────────────────────────────────
+
+describe("dispatchInboundMessage – marathon", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("dispatches marathon classification to launchMarathon", async () => {
+    const { classifyTask } = await import("./classifier.js");
+    const { launchMarathon } = await import("./marathon.js");
+    const { dispatchInboundMessage } = await import("./dispatch.js");
+
+    vi.mocked(classifyTask).mockResolvedValueOnce({
+      classification: "marathon",
+      reason: "large project request",
+    });
+
+    const config = createTestConfig();
+    const sessions = createMockSessionStore();
+
+    const result = await dispatchInboundMessage(
+      makeMsgContext({
+        text: "Build me a full-stack todo application with React and Express",
+      }),
+      { config, sessions },
+    );
+
+    expect(launchMarathon).toHaveBeenCalled();
+    expect(result.text).toBe("");
+  });
+
+  it("passes senderId to launchMarathon for downstream authorization", async () => {
+    const { classifyTask } = await import("./classifier.js");
+    const { launchMarathon } = await import("./marathon.js");
+    const { dispatchInboundMessage } = await import("./dispatch.js");
+
+    vi.mocked(classifyTask).mockResolvedValueOnce({
+      classification: "marathon",
+      reason: "large project request",
+    });
+
+    const config = createTestConfig();
+    const sessions = createMockSessionStore();
+
+    await dispatchInboundMessage(
+      makeMsgContext({
+        text: "Build me a full-stack todo application with React and Express",
+        senderId: "owner-123",
+      }),
+      { config, sessions },
+    );
+
+    expect(launchMarathon).toHaveBeenCalledWith(
+      expect.objectContaining({
+        senderId: "owner-123",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("downgrades marathon to deep when marathon.enabled is false", async () => {
+    const { classifyTask } = await import("./classifier.js");
+    const { launchMarathon } = await import("./marathon.js");
+    const { launchDeepWork } = await import("./deep-work.js");
+    const { dispatchInboundMessage } = await import("./dispatch.js");
+
+    vi.mocked(classifyTask).mockResolvedValueOnce({
+      classification: "marathon",
+      reason: "large project request",
+    });
+
+    const config = createTestConfig({ marathon: { enabled: false } });
+    const sessions = createMockSessionStore();
+
+    await dispatchInboundMessage(
+      makeMsgContext({
+        text: "Build me a full-stack todo application with React and Express",
+      }),
+      { config, sessions },
+    );
+
+    expect(launchMarathon).not.toHaveBeenCalled();
+    expect(launchDeepWork).toHaveBeenCalled();
+  });
+
+  it("marathon dispatch returns empty text reply", async () => {
+    const { classifyTask } = await import("./classifier.js");
+    const { dispatchInboundMessage } = await import("./dispatch.js");
+
+    vi.mocked(classifyTask).mockResolvedValueOnce({
+      classification: "marathon",
+      reason: "build request",
+    });
+
+    const config = createTestConfig();
+    const sessions = createMockSessionStore();
+
+    const result = await dispatchInboundMessage(
+      makeMsgContext({
+        text: "Build me a complete REST API with authentication and tests",
+      }),
+      { config, sessions },
+    );
+
+    expect(result.text).toBe("");
+  });
+
+  it("/marathon command routed to marathon command handler", async () => {
+    const { handleMarathonCommand } = await import("./marathon-commands.js");
+    const { dispatchInboundMessage } = await import("./dispatch.js");
+
+    const config = createTestConfig();
+    const sessions = createMockSessionStore();
+
+    await dispatchInboundMessage(
+      makeMsgContext({
+        text: "/marathon status",
+        isCommand: true,
+        commandName: "marathon",
+        commandArgs: "status",
+      }),
+      { config, sessions },
+    );
+
+    expect(handleMarathonCommand).toHaveBeenCalled();
   });
 });

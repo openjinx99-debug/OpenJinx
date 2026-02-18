@@ -15,8 +15,10 @@ const DEFAULT_FILES: Record<string, string> = {
 };
 
 export interface TestWorkspace {
-  /** Root directory of the test workspace. */
+  /** Root directory of the test workspace (identity files). */
   dir: string;
+  /** Path to a task output subdirectory. */
+  taskDir: string;
   /** Path to a pre-populated memory subdirectory. */
   memoryDir: string;
   /** Write a daily log file in memory/. */
@@ -37,7 +39,9 @@ export async function createTestWorkspace(
   fileOverrides?: Record<string, string>,
 ): Promise<TestWorkspace> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jinx-test-ws-"));
+  const taskDir = path.join(dir, "tasks");
   const memoryDir = path.join(dir, "memory");
+  await fs.mkdir(taskDir, { recursive: true });
   await fs.mkdir(memoryDir, { recursive: true });
 
   // Write default workspace files
@@ -62,6 +66,7 @@ export async function createTestWorkspace(
 
   return {
     dir,
+    taskDir,
     memoryDir,
 
     async writeDailyLog(date: string, content: string): Promise<string> {

@@ -39,6 +39,12 @@ describe("resolveAuth", () => {
     expect(() => resolveAuth()).toThrow("No Claude authentication found");
   });
 
+  it("error message mentions ~/.jinx/.env", () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    expect(() => resolveAuth()).toThrow("~/.jinx/.env");
+  });
+
   it("reads from macOS Keychain as fallback", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "");
     vi.stubEnv("ANTHROPIC_API_KEY", "");

@@ -1,73 +1,96 @@
 # Getting Started with OpenJinx
 
-## Quick Start (3 steps)
+## Choose a Setup Path
+
+You have two valid setup paths:
+
+1. **Guided setup (`/setup`)** in Claude Code: opinionated, interactive, recommended.
+2. **Manual bootstrap (`jinx onboard`)**: creates scaffolding, then you configure keys/channels yourself.
+
+Both paths end with `jinx doctor`, and `jinx doctor --onboarding` for blocker-focused readiness output.
+
+## Prerequisites
+
+- **Node.js 22.12.0+** — install via [fnm](https://github.com/Schniz/fnm) or [nvm](https://github.com/nvm-sh/nvm)
+- **pnpm** — `npm install -g pnpm` or `corepack enable`
+- **Claude Code CLI** — optional but recommended for guided `/setup` ([claude.ai/claude-code](https://claude.ai/claude-code))
+
+## API Key Checklist (Prepare Before Setup)
+
+- **Claude runtime (required)**: either
+  - Claude Code login (`claude login`) for macOS Keychain OAuth, or
+  - Anthropic API key (`ANTHROPIC_API_KEY`) from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+- **OpenAI (optional)** for vector memory: [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+- **OpenRouter (optional)** for web search: [openrouter.ai/keys](https://openrouter.ai/keys)
+- **Composio (optional)** for external integrations: [app.composio.dev](https://app.composio.dev)
+
+Keys are stored locally in `~/.jinx/.env`. Jinx auto-loads this file at startup.
+
+## Path A: Guided Setup in Claude Code (Recommended)
 
 ```bash
 # 1. Clone and enter the repo
 git clone https://github.com/your-org/OpenJinx.git
 cd OpenJinx
 
-# 2. Launch Claude Code
-claude
+# 2. Install dependencies
+pnpm install
 
-# 3. Run the setup wizard
+# 3. Launch Claude Code and run setup
+claude
 /setup
 ```
 
-The `/setup` wizard walks you through everything: installing dependencies, configuring API keys, setting up messaging channels (WhatsApp, Telegram), and verifying your installation.
-
-## Prerequisites
-
-- **Node.js 22.12.0+** — install via [fnm](https://github.com/Schniz/fnm) or [nvm](https://github.com/nvm-sh/nvm)
-- **pnpm** — `npm install -g pnpm` or `corepack enable`
-- **Claude Code CLI** — install from [claude.ai/claude-code](https://claude.ai/claude-code)
-
-## What `/setup` Configures
+What `/setup` configures:
 
 | Step               | What it does                                                 |
 | ------------------ | ------------------------------------------------------------ |
-| Dependencies       | Runs `pnpm install`                                          |
+| Home bootstrap     | Runs `jinx onboard` to create `~/.jinx` config + workspace   |
 | Assistant name     | Names your assistant (default: Jinx)                         |
-| Anthropic API key  | Required for Claude — checks Keychain/OAuth first            |
+| Anthropic API key  | Required fallback for Claude auth                            |
 | OpenAI API key     | Optional — enables vector memory search                      |
 | OpenRouter API key | Optional — enables web search via Perplexity                 |
 | Composio API key   | Optional — enables GitHub/Slack/Gmail integrations           |
 | WhatsApp           | Optional — connects via QR code, locked to your phone        |
 | Telegram           | Optional — creates bot via BotFather, locked to your user ID |
 | Sandbox            | Checks Apple Container availability (macOS 26+)              |
+| Verification       | Runs `jinx doctor --onboarding` and reports readiness        |
 
-All credentials are stored locally in `~/.jinx/.env` and never committed to the repo. Channels default to allowlist mode — only you can interact with the bot.
+Channels default to secure posture (`dmPolicy: allowlist`, `groupPolicy: disabled`) when configured through the guided flow.
+Guided setup persists progress in `~/.jinx/setup-state.json` and skips completed steps by default on rerun.
+Use `pnpm dev -- setup-state show --json` to inspect current setup progress state.
 
-## Manual Setup (without Claude Code)
-
-If you prefer to set up manually:
+## Path B: Manual Bootstrap + Configuration
 
 ```bash
-# Install dependencies
+# 1. Install dependencies
 pnpm install
 
-# Run the onboard command (creates ~/.jinx/ structure)
+# 2. Bootstrap ~/.jinx structure (config + workspace templates)
 pnpm dev -- onboard
 
-# Copy and fill in your API keys
+# 3. Copy and fill in API keys
 cp .env.example ~/.jinx/.env
-# Edit ~/.jinx/.env with your keys
 
-# Edit channel config
-# Edit ~/.jinx/config.yaml to enable WhatsApp/Telegram
+# 4. Enable and configure channels as needed
+# Edit ~/.jinx/config.yaml
 
-# Verify setup
+# 5. Verify setup
 pnpm dev -- doctor
+pnpm dev -- doctor --onboarding
 ```
 
-## Post-Setup Commands
+`onboard` is intentionally non-interactive. It creates both `~/.jinx/workspace/` (identity files) and `~/.jinx/tasks/` (task output root), plus a valid config baseline. It points you to `/setup` if you want guided channel/key configuration.
+
+## Run Commands
 
 ```bash
 pnpm dev -- gateway    # Start the gateway (WhatsApp + Telegram)
 pnpm dev -- chat       # Interactive terminal chat
 pnpm dev -- doctor     # System health check
+pnpm dev -- doctor --onboarding   # Onboarding blockers + remediation hints
 ```
 
 ## Post-Setup Changes
 
-Run `/customize` in Claude Code to modify your setup after initial configuration — rename the assistant, add channels, update API keys, etc.
+Run `/customize` in Claude Code to modify your setup after initial configuration: rename the assistant, add channels, or rotate/update API keys.

@@ -152,6 +152,29 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("Memory: /home/user/.jinx/memory");
   });
 
+  it("shows separate identity and task workspace when identityDir is set", () => {
+    const prompt = buildPrompt({
+      workspaceDir: "/home/user/.jinx/tasks/chat-telegram-dm-12345",
+      identityDir: "/home/user/.jinx/workspace",
+      memoryDir: "/home/user/.jinx/memory",
+    });
+
+    expect(prompt).toContain("Identity: /home/user/.jinx/workspace");
+    expect(prompt).toContain("Task workspace: /home/user/.jinx/tasks/chat-telegram-dm-12345");
+    expect(prompt).not.toContain("Workspace: /home/user/.jinx/tasks/chat-telegram-dm-12345");
+  });
+
+  it("shows single Workspace line when identityDir is not set", () => {
+    const prompt = buildPrompt({
+      workspaceDir: "/home/user/.jinx/workspace",
+      memoryDir: "/home/user/.jinx/memory",
+    });
+
+    expect(prompt).toContain("Workspace: /home/user/.jinx/workspace");
+    expect(prompt).not.toContain("Identity:");
+    expect(prompt).not.toContain("Task workspace:");
+  });
+
   it("does not include absolute file paths in workspace-file tags", () => {
     const prompt = buildPrompt({
       workspaceFiles: [makeFile("USER.md", "# User\nTommy", "/home/user/.jinx/workspace/USER.md")],

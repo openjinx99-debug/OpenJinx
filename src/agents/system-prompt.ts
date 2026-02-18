@@ -14,6 +14,8 @@ export interface SystemPromptOptions {
   version?: string;
   workspaceDir: string;
   memoryDir: string;
+  /** Identity directory when it differs from workspaceDir. */
+  identityDir?: string;
   /** Configured timezone (IANA). Auto-detected when omitted. */
   timezone?: string;
   /** Message context for situational awareness. */
@@ -119,7 +121,12 @@ function buildMetadataSection(options: SystemPromptOptions): string {
   if (options.version) {
     lines.push(`- Version: ${options.version}`);
   }
-  lines.push(`- Workspace: ${options.workspaceDir}`);
+  if (options.identityDir) {
+    lines.push(`- Identity: ${options.identityDir}`);
+    lines.push(`- Task workspace: ${options.workspaceDir}`);
+  } else {
+    lines.push(`- Workspace: ${options.workspaceDir}`);
+  }
   lines.push(`- Memory: ${options.memoryDir}`);
 
   // Date & time with timezone

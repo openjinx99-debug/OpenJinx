@@ -8,16 +8,17 @@ const logger = createLogger("classifier");
 const MIN_CLASSIFY_LENGTH = 20;
 
 export interface ClassificationResult {
-  classification: "quick" | "deep";
+  classification: "quick" | "deep" | "marathon";
   reason: string;
 }
 
-const CLASSIFIER_PROMPT = `Classify this user message as either "quick" or "deep".
+const CLASSIFIER_PROMPT = `Classify this user message as "quick", "deep", or "marathon".
 
 "quick": Simple greetings, short questions, casual chat, status checks, single-step requests, commands.
 "deep": Multi-step research, comparative analysis, tasks requiring web search + synthesis, code generation with execution, requests for thoroughness or comprehensive answers, anything needing 5+ minutes of focused work.
+"marathon": Large-scale project requests that require building a complete application, multi-file codebase, or multi-hour autonomous work. Examples: "build me a full-stack app", "create a REST API with tests and deployment", "build a complete website with authentication". Must involve creating something substantial from scratch.
 
-Respond with ONLY a JSON object: {"classification":"quick"|"deep","reason":"brief reason"}`;
+Respond with ONLY a JSON object: {"classification":"quick"|"deep"|"marathon","reason":"brief reason"}`;
 
 /**
  * Classify whether a message needs deep work or can be handled quickly.
@@ -48,7 +49,11 @@ export async function classifyTask(
       return { classification: "quick", reason: "unparseable classifier response" };
     }
 
-    if (parsed.classification !== "quick" && parsed.classification !== "deep") {
+    if (
+      parsed.classification !== "quick" &&
+      parsed.classification !== "deep" &&
+      parsed.classification !== "marathon"
+    ) {
       logger.warn(`Classifier returned invalid classification: ${result.text.slice(0, 200)}`);
       return { classification: "quick", reason: "invalid classifier response" };
     }

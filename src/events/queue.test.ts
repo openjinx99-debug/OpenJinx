@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createEventQueue } from "./queue.js";
 
 describe("EventQueue", () => {
@@ -57,5 +60,39 @@ describe("EventQueue", () => {
     const peeked = queue.peek("session-1");
     expect(peeked).toHaveLength(1);
     expect(queue.count("session-1")).toBe(1); // Still there
+  });
+
+  it("persists queued events across queue recreation", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "jinx-event-queue-"));
+    const persistPath = path.join(tmpDir, "events.json");
+    try {
+      const queue = createEventQueue({ persistPath });
+      queue.enqueue("persisted-1", "session-1", "system");
+      queue.enqueue("persisted-2", "session-1", "cron");
+      expect(queue.count("session-1")).toBe(2);
+
+      const reloaded = createEventQueue({ persistPath });
+      expect(reloaded.count("session-1")).toBe(2);
+      expect(reloaded.peek("session-1").map((e) => e.text)).toEqual(["persisted-1", "persisted-2"]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists drain operations across queue recreation", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "jinx-event-queue-"));
+    const persistPath = path.join(tmpDir, "events.json");
+    try {
+      const queue = createEventQueue({ persistPath });
+      queue.enqueue("persisted-1", "session-1", "system");
+      expect(queue.count("session-1")).toBe(1);
+      queue.drain("session-1");
+      expect(queue.count("session-1")).toBe(0);
+
+      const reloaded = createEventQueue({ persistPath });
+      expect(reloaded.count("session-1")).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

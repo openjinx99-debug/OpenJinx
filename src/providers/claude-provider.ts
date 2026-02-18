@@ -72,7 +72,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
     // Use streaming to get text deltas in real-time
     const stream = client.messages.stream({
       model: modelString,
-      max_tokens: 8192,
+      max_tokens: 16_384,
       system: systemParam,
       messages,
       tools: tools.length > 0 ? tools : undefined,

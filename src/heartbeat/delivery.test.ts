@@ -122,7 +122,7 @@ describe("deliverHeartbeatEvent", () => {
     });
   });
 
-  it("delivers to terminal when session channel is terminal", () => {
+  it("delivers to terminal when session channel is terminal", async () => {
     const session = makeSessionEntry({ channel: "terminal" });
     const sessions = makeSessionStore({ "heartbeat:agent-1": session });
     const terminalChannel = makeChannel({ id: "terminal", isReady: vi.fn(() => true) });
@@ -135,7 +135,9 @@ describe("deliverHeartbeatEvent", () => {
     deliverHeartbeatEvent(makeEvent(), deps);
 
     // Terminal channel exists and is ready, so it goes through deliverOutboundPayloads
-    expect(mockedDeliver).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(mockedDeliver).toHaveBeenCalled();
+    });
   });
 
   it("delivers to telegram when session has telegram channel", async () => {
@@ -160,7 +162,7 @@ describe("deliverHeartbeatEvent", () => {
     });
   });
 
-  it("falls back to terminal when channel is not ready", () => {
+  it("falls back to terminal when channel is not ready", async () => {
     const session = makeSessionEntry({ channel: "telegram" });
     const sessions = makeSessionStore({ "heartbeat:agent-1": session });
     const telegramChannel = makeChannel({ id: "telegram", isReady: vi.fn(() => false) });
@@ -173,11 +175,13 @@ describe("deliverHeartbeatEvent", () => {
     deliverHeartbeatEvent(makeEvent(), deps);
 
     expect(mockedDeliver).not.toHaveBeenCalled();
-    expect(mockedEmit).toHaveBeenCalledWith("terminal:dm:local", expect.any(Object));
+    await vi.waitFor(() => {
+      expect(mockedEmit).toHaveBeenCalledWith("terminal:dm:local", expect.any(Object));
+    });
   });
 
   it("falls back to terminal on delivery failure", async () => {
-    mockedDeliver.mockResolvedValueOnce({
+    mockedDeliver.mockResolvedValue({
       channel: "telegram",
       to: "123",
       textChunks: 0,
