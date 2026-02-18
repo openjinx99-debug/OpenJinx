@@ -58,10 +58,7 @@ const sampleCheckpoint = {
         name: "tests",
         prompt: "Write tests",
         estimatedMinutes: 10,
-        acceptanceCriteria: [
-          "tests_pass",
-          "command_succeeds: cd /workspace && npm run -s test",
-        ],
+        acceptanceCriteria: ["tests_pass", "command_succeeds: cd /workspace && npm run -s test"],
       },
     ],
   },

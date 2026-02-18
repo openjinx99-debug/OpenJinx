@@ -28,16 +28,19 @@ const PLAN_RESPONSE = JSON.stringify({
       name: "scaffold",
       prompt: "Create package.json, tsconfig, and src/index.ts",
       estimatedMinutes: 5,
+      acceptanceCriteria: ["file_exists: src/scaffold.ts", "file_exists: src/scaffold.test.ts"],
     },
     {
       name: "core-logic",
       prompt: "Implement todo CRUD operations",
       estimatedMinutes: 10,
+      acceptanceCriteria: ["file_exists: src/core-logic.ts", "file_exists: src/core-logic.test.ts"],
     },
     {
       name: "tests",
       prompt: "Write unit tests for todo operations",
       estimatedMinutes: 10,
+      acceptanceCriteria: ["file_exists: src/tests.ts", "file_exists: src/tests.test.ts"],
     },
   ],
 });

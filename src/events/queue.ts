@@ -48,7 +48,12 @@ export function createEventQueue(options: EventQueueOptions = {}): SystemEventQu
     try {
       const data = fs.readFileSync(persistPath, "utf-8");
       const parsed = JSON.parse(data) as PersistedEventQueue;
-      if (parsed && typeof parsed === "object" && parsed.queues && typeof parsed.queues === "object") {
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.queues &&
+        typeof parsed.queues === "object"
+      ) {
         for (const [sessionKey, events] of Object.entries(parsed.queues)) {
           if (!Array.isArray(events)) {
             continue;

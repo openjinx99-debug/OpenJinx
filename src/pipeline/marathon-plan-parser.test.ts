@@ -31,10 +31,7 @@ const VALID_PLAN = {
       name: "logic",
       prompt: "Implement logic",
       estimatedMinutes: 10,
-      acceptanceCriteria: [
-        "file_exists: src/index.ts",
-        "file_contains: src/index.ts :: export",
-      ],
+      acceptanceCriteria: ["file_exists: src/index.ts", "file_contains: src/index.ts :: export"],
     },
   ],
 };

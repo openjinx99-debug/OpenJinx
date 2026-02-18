@@ -92,7 +92,13 @@ describe("deliveryCommand", () => {
     vi.mocked(dl.readDeadLetterReplayRecords).mockResolvedValue([]);
 
     const { deliveryCommand } = await import("./delivery.js");
-    await deliveryCommand.parseAsync(["node", "delivery", "replay", sampleDeadLetter.id, "--dry-run"]);
+    await deliveryCommand.parseAsync([
+      "node",
+      "delivery",
+      "replay",
+      sampleDeadLetter.id,
+      "--dry-run",
+    ]);
 
     expect(telegram.sendMessageTelegram).not.toHaveBeenCalled();
     expect(dl.appendDeadLetterReplayRecord).toHaveBeenCalledWith(

@@ -7,11 +7,7 @@ import type { AgentToolDefinition } from "../providers/types.js";
 import type { ContainerManager } from "../sandbox/container-manager.js";
 import type { ChannelPlugin } from "../types/channels.js";
 import type { JinxConfig } from "../types/config.js";
-import type {
-  DeliveryTarget,
-  InputFileInfo,
-  ChunkDefinition,
-} from "../types/marathon.js";
+import type { DeliveryTarget, InputFileInfo, ChunkDefinition } from "../types/marathon.js";
 import type { ChunkResult, MarathonCheckpoint } from "../types/marathon.js";
 import type { MediaAttachment } from "../types/messages.js";
 import type { SessionStore } from "../types/sessions.js";
@@ -40,12 +36,12 @@ import {
   listCheckpoints,
   resolveMarathonWorkspace,
 } from "./checkpoint.js";
+import { packageDeliverables } from "./marathon-artifacts.js";
 import {
   buildWorkspaceSnapshot,
   listFilesRecursive,
   writeProgressFile,
 } from "./marathon-context.js";
-import { packageDeliverables } from "./marathon-artifacts.js";
 import { buildControlPolicy } from "./marathon-control.js";
 import { deliverMarathonPayload, sendMarathonProgressUpdate } from "./marathon-delivery.js";
 import {

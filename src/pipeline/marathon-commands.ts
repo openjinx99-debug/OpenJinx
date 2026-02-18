@@ -1,5 +1,5 @@
-import type { MsgContext, ReplyPayload } from "../types/messages.js";
 import type { MarathonControlPolicy } from "../types/marathon.js";
+import type { MsgContext, ReplyPayload } from "../types/messages.js";
 import type { DispatchDeps } from "./dispatch.js";
 import { createLogger } from "../infra/logger.js";
 import { logProductTelemetry } from "../infra/product-telemetry.js";
@@ -116,7 +116,9 @@ function matchesControlPolicy(
     }
     const ctxGroupId = ctx.groupId ?? ctx.sessionKey.split(":")[2];
     const sameGroup =
-      Boolean(ctxGroupId) && Boolean(controlPolicy.originGroupId) && ctxGroupId === controlPolicy.originGroupId;
+      Boolean(ctxGroupId) &&
+      Boolean(controlPolicy.originGroupId) &&
+      ctxGroupId === controlPolicy.originGroupId;
     if (!sameGroup) {
       return false;
     }
@@ -170,7 +172,9 @@ async function handlePause(
   deps: DispatchDeps,
 ): Promise<ReplyPayload> {
   if (!taskId) {
-    emitControlTelemetry("marathon_control_invalid", ctx, "pause", undefined, { reason: "missing-task-id" });
+    emitControlTelemetry("marathon_control_invalid", ctx, "pause", undefined, {
+      reason: "missing-task-id",
+    });
     return { text: "Usage: `/marathon pause <taskId>`" };
   }
   const cp = await readCheckpoint(taskId);
@@ -279,7 +283,9 @@ async function handleLogs(
   deps: DispatchDeps,
 ): Promise<ReplyPayload> {
   if (!taskId) {
-    emitControlTelemetry("marathon_control_invalid", ctx, "logs", undefined, { reason: "missing-task-id" });
+    emitControlTelemetry("marathon_control_invalid", ctx, "logs", undefined, {
+      reason: "missing-task-id",
+    });
     return { text: "Usage: `/marathon logs <taskId>`" };
   }
   const cp = await readCheckpoint(taskId);

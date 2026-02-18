@@ -124,7 +124,11 @@ describe("deliverWithRetryAndFallback", () => {
 
     const lines = fs.readFileSync(deadLetterPath, "utf-8").trim().split("\n");
     expect(lines).toHaveLength(1);
-    const parsed = JSON.parse(lines[0]) as { source: string; reason: string; payload: { media: [] } };
+    const parsed = JSON.parse(lines[0]) as {
+      source: string;
+      reason: string;
+      payload: { media: [] };
+    };
     expect(parsed.source).toBe("deep-work");
     expect(parsed.reason).toBe("completion");
     expect(parsed.payload.media).toHaveLength(1);

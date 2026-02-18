@@ -1,9 +1,12 @@
 import { Command } from "commander";
-import { createWhatsAppSession } from "../../channels/whatsapp/session.js";
+import type {
+  DeliveryDeadLetterEntry,
+  DeadLetterReplayRecord,
+} from "../../delivery/dead-letter.js";
 import { sendMessageTelegram } from "../../channels/telegram/send.js";
 import { sendMessageWhatsApp } from "../../channels/whatsapp/send.js";
+import { createWhatsAppSession } from "../../channels/whatsapp/session.js";
 import { loadAndValidateConfig } from "../../config/validation.js";
-import type { DeliveryDeadLetterEntry, DeadLetterReplayRecord } from "../../delivery/dead-letter.js";
 import {
   appendDeadLetterReplayRecord,
   getDeadLetterPaths,
@@ -52,13 +55,16 @@ export const deliveryCommand = new Command("delivery")
       .action(async (opts: { limit?: string; sinceHours?: string; json?: boolean }) => {
         const limit = parsePositiveInt(opts.limit, "limit");
         const sinceHours =
-          opts.sinceHours !== undefined ? parsePositiveInt(opts.sinceHours, "since-hours") : undefined;
+          opts.sinceHours !== undefined
+            ? parsePositiveInt(opts.sinceHours, "since-hours")
+            : undefined;
         if (limit === undefined || (opts.sinceHours !== undefined && sinceHours === undefined)) {
           process.exitCode = 1;
           return;
         }
 
-        const since = sinceHours !== undefined ? Date.now() - sinceHours * 60 * 60 * 1000 : undefined;
+        const since =
+          sinceHours !== undefined ? Date.now() - sinceHours * 60 * 60 * 1000 : undefined;
         const entries = await readDeadLetterEntries({ since, limit });
         const replayRecords = await readDeadLetterReplayRecords();
         const replayedSuccess = new Set(
@@ -103,88 +109,107 @@ export const deliveryCommand = new Command("delivery")
         "WhatsApp connect timeout in milliseconds",
         String(DEFAULT_REPLAY_TIMEOUT_MS),
       )
-      .action(async (deadLetterId: string, opts: { dryRun?: boolean; force?: boolean; timeoutMs?: string }) => {
-        const timeoutMs = parsePositiveInt(opts.timeoutMs, "timeout-ms");
-        if (timeoutMs === undefined) {
-          process.exitCode = 1;
-          return;
-        }
+      .action(
+        async (
+          deadLetterId: string,
+          opts: { dryRun?: boolean; force?: boolean; timeoutMs?: string },
+        ) => {
+          const timeoutMs = parsePositiveInt(opts.timeoutMs, "timeout-ms");
+          if (timeoutMs === undefined) {
+            process.exitCode = 1;
+            return;
+          }
 
-        const entries = await readDeadLetterEntries();
-        let entry: DeliveryDeadLetterEntry | undefined;
-        try {
-          entry = findDeadLetterEntry(entries, deadLetterId);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(msg);
-          process.exitCode = 1;
-          return;
-        }
-        if (!entry) {
-          console.error(`Dead-letter entry not found: ${deadLetterId}`);
-          process.exitCode = 1;
-          return;
-        }
+          const entries = await readDeadLetterEntries();
+          let entry: DeliveryDeadLetterEntry | undefined;
+          try {
+            entry = findDeadLetterEntry(entries, deadLetterId);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(msg);
+            process.exitCode = 1;
+            return;
+          }
+          if (!entry) {
+            console.error(`Dead-letter entry not found: ${deadLetterId}`);
+            process.exitCode = 1;
+            return;
+          }
 
-        const replayRecords = await readDeadLetterReplayRecords();
-        const alreadySucceeded = replayRecords.some(
-          (record) => record.deadLetterId === entry.id && record.status === "success",
-        );
-        if (alreadySucceeded && !opts.force) {
-          const msg =
-            `Dead-letter ${entry.id} already replayed successfully. ` +
-            `Use --force to replay again.`;
-          console.error(msg);
-          await appendDeadLetterReplayRecord(
-            buildReplayRecord(entry, "skipped", msg, opts.force),
-          ).catch((err) => logger.warn(`Failed to append replay record: ${err}`));
-          logReplayTelemetry("dead_letter_replay_skipped", entry, { reason: "already-replayed" });
-          process.exitCode = 1;
-          return;
-        }
-
-        const replayText = buildReplayText(entry);
-        if (opts.dryRun) {
-          console.log(
-            JSON.stringify(
-              {
-                mode: "dry-run",
-                deadLetterId: entry.id,
-                target: entry.target,
-                source: entry.source,
-                reason: entry.reason,
-                textPreview: replayText.slice(0, 500),
-                mediaMetadataCount: entry.payload.media.length,
-              },
-              null,
-              2,
-            ),
+          const replayRecords = await readDeadLetterReplayRecords();
+          const alreadySucceeded = replayRecords.some(
+            (record) => record.deadLetterId === entry.id && record.status === "success",
           );
-          await appendDeadLetterReplayRecord(buildReplayRecord(entry, "dry-run", undefined, opts.force));
-          logReplayTelemetry("dead_letter_replay_dry_run", entry, { forced: Boolean(opts.force) });
-          return;
-        }
+          if (alreadySucceeded && !opts.force) {
+            const msg =
+              `Dead-letter ${entry.id} already replayed successfully. ` +
+              `Use --force to replay again.`;
+            console.error(msg);
+            await appendDeadLetterReplayRecord(
+              buildReplayRecord(entry, "skipped", msg, opts.force),
+            ).catch((err) => logger.warn(`Failed to append replay record: ${err}`));
+            logReplayTelemetry("dead_letter_replay_skipped", entry, { reason: "already-replayed" });
+            process.exitCode = 1;
+            return;
+          }
 
-        logReplayTelemetry("dead_letter_replay_requested", entry, { forced: Boolean(opts.force) });
+          const replayText = buildReplayText(entry);
+          if (opts.dryRun) {
+            console.log(
+              JSON.stringify(
+                {
+                  mode: "dry-run",
+                  deadLetterId: entry.id,
+                  target: entry.target,
+                  source: entry.source,
+                  reason: entry.reason,
+                  textPreview: replayText.slice(0, 500),
+                  mediaMetadataCount: entry.payload.media.length,
+                },
+                null,
+                2,
+              ),
+            );
+            await appendDeadLetterReplayRecord(
+              buildReplayRecord(entry, "dry-run", undefined, opts.force),
+            );
+            logReplayTelemetry("dead_letter_replay_dry_run", entry, {
+              forced: Boolean(opts.force),
+            });
+            return;
+          }
 
-        let replayError: string | undefined;
-        try {
-          const config = await loadAndValidateConfig();
-          await replayDeadLetterEntry(entry, replayText, config, timeoutMs);
-          await appendDeadLetterReplayRecord(buildReplayRecord(entry, "success", undefined, opts.force));
-          logReplayTelemetry("dead_letter_replay_succeeded", entry, { forced: Boolean(opts.force) });
-          console.log(`Replayed dead-letter ${entry.id} to ${entry.target.channel}:${entry.target.to}`);
-        } catch (err) {
-          replayError = err instanceof Error ? err.message : String(err);
-          await appendDeadLetterReplayRecord(buildReplayRecord(entry, "failed", replayError, opts.force));
-          logReplayTelemetry("dead_letter_replay_failed", entry, {
+          logReplayTelemetry("dead_letter_replay_requested", entry, {
             forced: Boolean(opts.force),
-            error: replayError,
           });
-          console.error(`Replay failed for ${entry.id}: ${replayError}`);
-          process.exitCode = 1;
-        }
-      }),
+
+          let replayError: string | undefined;
+          try {
+            const config = await loadAndValidateConfig();
+            await replayDeadLetterEntry(entry, replayText, config, timeoutMs);
+            await appendDeadLetterReplayRecord(
+              buildReplayRecord(entry, "success", undefined, opts.force),
+            );
+            logReplayTelemetry("dead_letter_replay_succeeded", entry, {
+              forced: Boolean(opts.force),
+            });
+            console.log(
+              `Replayed dead-letter ${entry.id} to ${entry.target.channel}:${entry.target.to}`,
+            );
+          } catch (err) {
+            replayError = err instanceof Error ? err.message : String(err);
+            await appendDeadLetterReplayRecord(
+              buildReplayRecord(entry, "failed", replayError, opts.force),
+            );
+            logReplayTelemetry("dead_letter_replay_failed", entry, {
+              forced: Boolean(opts.force),
+              error: replayError,
+            });
+            console.error(`Replay failed for ${entry.id}: ${replayError}`);
+            process.exitCode = 1;
+          }
+        },
+      ),
   );
 
 function parsePositiveInt(raw: string | undefined, fieldName: string): number | undefined {
@@ -254,7 +279,7 @@ function formatTimestamp(ts: number | undefined): string {
 }
 
 function formatCounts(counts: Record<string, number>): string {
-  const items = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const items = Object.entries(counts).toSorted((a, b) => b[1] - a[1]);
   if (items.length === 0) {
     return "none";
   }

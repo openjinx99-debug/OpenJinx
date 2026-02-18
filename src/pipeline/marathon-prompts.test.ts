@@ -62,10 +62,7 @@ const PLAN_WITH_CRITERIA = {
       name: "logic",
       prompt: "Implement logic",
       estimatedMinutes: 10,
-      acceptanceCriteria: [
-        "file_contains: src/calculator.ts :: export function add",
-        "tests_pass",
-      ],
+      acceptanceCriteria: ["file_contains: src/calculator.ts :: export function add", "tests_pass"],
     },
   ],
 };

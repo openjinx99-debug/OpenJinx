@@ -32,7 +32,15 @@ const runAgentMock = vi.fn().mockResolvedValue({
   model: "test-model",
 });
 
-const deliverWithRetryAndFallbackMock = vi.fn(async (opts: Record<string, any>) => {
+interface MockReliableDeliveryOpts {
+  deps?: { getChannel?: (channel?: string) => { isReady?: () => boolean } | undefined };
+  target?: { channel?: string };
+  terminalText?: string;
+  payload?: { text?: string };
+  emitFallback?: (sessionKey: string, text: string) => void;
+}
+
+const deliverWithRetryAndFallbackMock = vi.fn(async (opts: MockReliableDeliveryOpts) => {
   const channel = opts.deps?.getChannel?.(opts.target?.channel);
   if (channel?.isReady?.()) {
     return {
@@ -75,8 +83,7 @@ vi.mock("../agents/runner.js", () => ({
 }));
 
 vi.mock("../delivery/reliable.js", () => ({
-  deliverWithRetryAndFallback: (...args: unknown[]) =>
-    deliverWithRetryAndFallbackMock(...args),
+  deliverWithRetryAndFallback: (...args: unknown[]) => deliverWithRetryAndFallbackMock(...args),
 }));
 
 vi.mock("../heartbeat/delivery.js", () => ({

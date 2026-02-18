@@ -3,8 +3,8 @@ import path from "node:path";
 import type { InputFileInfo } from "../types/marathon.js";
 import type { OutboundMedia } from "../types/messages.js";
 import { createLogger } from "../infra/logger.js";
-import { DELIVERABLES_MANIFEST } from "./marathon-prompts.js";
 import { listFilesRecursive } from "./marathon-context.js";
+import { DELIVERABLES_MANIFEST } from "./marathon-prompts.js";
 
 const logger = createLogger("marathon-artifacts");
 
@@ -129,7 +129,9 @@ export async function packageDeliverables(
   if (manifestPaths) {
     const zip = await packageFilesAsZip(workspaceDir, taskId, manifestPaths);
     if (zip) {
-      logger.info(`Using .deliverables manifest: ${manifestPaths.length} file(s) for task=${taskId}`);
+      logger.info(
+        `Using .deliverables manifest: ${manifestPaths.length} file(s) for task=${taskId}`,
+      );
       return [zip];
     }
     logger.warn("Failed to package .deliverables entries as ZIP, trying auto-detect");
@@ -247,10 +249,7 @@ async function detectBuildOutputFiles(workspaceDir: string): Promise<string[]> {
       break;
     }
     const dirPath = path.join(workspaceDir, dirName);
-    const files = await listFilesRecursively(
-      dirPath,
-      MAX_BUILD_OUTPUT_FILES - discovered.length,
-    );
+    const files = await listFilesRecursively(dirPath, MAX_BUILD_OUTPUT_FILES - discovered.length);
     discovered.push(...files);
   }
   return discovered;

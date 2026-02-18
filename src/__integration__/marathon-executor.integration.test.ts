@@ -34,9 +34,33 @@ async function standardAgentHandler(options: AgentTurnOptions) {
     const plan = JSON.stringify({
       goal: "Build a calculator",
       chunks: [
-        { name: "setup", prompt: "Create project structure", estimatedMinutes: 5 },
-        { name: "logic", prompt: "Implement calculator logic", estimatedMinutes: 10 },
-        { name: "tests", prompt: "Write tests", estimatedMinutes: 5 },
+        {
+          name: "setup",
+          prompt: "Create project structure",
+          estimatedMinutes: 5,
+          acceptanceCriteria: [
+            "file_exists: setup.ts",
+            "file_contains: setup.ts :: setup chunk output",
+          ],
+        },
+        {
+          name: "logic",
+          prompt: "Implement calculator logic",
+          estimatedMinutes: 10,
+          acceptanceCriteria: [
+            "file_exists: logic.ts",
+            "file_contains: logic.ts :: logic chunk output",
+          ],
+        },
+        {
+          name: "tests",
+          prompt: "Write tests",
+          estimatedMinutes: 5,
+          acceptanceCriteria: [
+            "file_exists: tests.ts",
+            "file_contains: tests.ts :: tests chunk output",
+          ],
+        },
       ],
     });
     options.onDelta?.(plan);
@@ -236,8 +260,24 @@ describe("marathon executor integration", () => {
         const plan = JSON.stringify({
           goal: "Blocked task",
           chunks: [
-            { name: "slow-chunk", prompt: "Do slow work", estimatedMinutes: 60 },
-            { name: "never-reached", prompt: "Should not run", estimatedMinutes: 5 },
+            {
+              name: "slow-chunk",
+              prompt: "Do slow work",
+              estimatedMinutes: 60,
+              acceptanceCriteria: [
+                "file_exists: slow-chunk.ts",
+                "file_contains: slow-chunk.ts :: slow-chunk chunk output",
+              ],
+            },
+            {
+              name: "never-reached",
+              prompt: "Should not run",
+              estimatedMinutes: 5,
+              acceptanceCriteria: [
+                "file_exists: never-reached.ts",
+                "file_contains: never-reached.ts :: never-reached chunk output",
+              ],
+            },
           ],
         });
         options.onDelta?.(plan);
@@ -451,11 +491,16 @@ describe("marathon executor integration", () => {
       { intervalMs: 50, timeoutMs: 10_000 },
     );
 
-    // Write real files into the workspace directory
+    // Write real build output files into the workspace directory so
+    // auto-detect packages relevant artifacts into a ZIP.
     const workspaceDir = workspaceDirs.find((d) => d.includes("tasks/marathon-"));
     expect(workspaceDir).toBeDefined();
-    await fs.writeFile(path.join(workspaceDir!, "index.ts"), "console.log('hello');");
-    await fs.writeFile(path.join(workspaceDir!, "package.json"), '{"name":"test"}');
+    await fs.mkdir(path.join(workspaceDir!, "dist"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir!, "dist", "index.html"),
+      "<html><body>Hello</body></html>",
+    );
+    await fs.writeFile(path.join(workspaceDir!, "dist", "app.js"), "console.log('hello');");
 
     // Wait for completion
     await pollUntil(() => channel.deliveries.some((d) => d.payload.text.includes("complete!")), {

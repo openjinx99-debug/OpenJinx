@@ -25,10 +25,7 @@ export interface MarathonDeliveryDeps {
   channels?: Map<string, ChannelPlugin>;
 }
 
-export type MarathonTelemetryEmitter = (
-  event: string,
-  metadata: Record<string, unknown>,
-) => void;
+export type MarathonTelemetryEmitter = (event: string, metadata: Record<string, unknown>) => void;
 
 export interface DeliverMarathonPayloadOptions {
   text: string;

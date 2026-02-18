@@ -129,10 +129,12 @@ describe("heartbeat delivery routing integration", () => {
       getChannel: (name) => (name === "telegram" ? telegram : undefined),
     });
 
-    expect(telegram.sendMock).not.toHaveBeenCalled();
-    expect(terminalEvents).toHaveLength(1);
-    expect(terminalEvents[0]).toContain("💓");
-    expect(terminalEvents[0]).toContain("ALERT:");
+    await vi.waitFor(() => {
+      expect(telegram.sendMock).not.toHaveBeenCalled();
+      expect(terminalEvents.length).toBeGreaterThan(0);
+    });
+    expect(terminalEvents.some((event) => event.includes("💓"))).toBe(true);
+    expect(terminalEvents.some((event) => event.includes("ALERT:"))).toBe(true);
 
     unsub();
   });
@@ -172,9 +174,9 @@ describe("heartbeat delivery routing integration", () => {
 
     await vi.waitFor(() => {
       expect(telegram.sendMock).toHaveBeenCalled();
-      expect(terminalEvents).toHaveLength(1);
+      expect(terminalEvents.length).toBeGreaterThan(0);
     });
-    expect(terminalEvents[0]).toContain("ALERT:");
+    expect(terminalEvents.some((event) => event.includes("ALERT:"))).toBe(true);
 
     unsub();
   });

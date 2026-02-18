@@ -62,7 +62,9 @@ function getDeliveryDeadLetterPath(): string {
 }
 
 export function getDeadLetterPaths(): string[] {
-  return [...new Set([getDeliveryDeadLetterPath(), path.join(resolveMarathonDir(), "dead-letter.jsonl")])];
+  return [
+    ...new Set([getDeliveryDeadLetterPath(), path.join(resolveMarathonDir(), "dead-letter.jsonl")]),
+  ];
 }
 
 export function getReplayLogPath(): string {
@@ -204,11 +206,7 @@ function normalizeDeadLetterEntry(value: unknown): DeliveryDeadLetterEntry | und
   }
 
   const targetRaw = obj.target as Record<string, unknown> | undefined;
-  if (
-    !targetRaw ||
-    typeof targetRaw.channel !== "string" ||
-    typeof targetRaw.to !== "string"
-  ) {
+  if (!targetRaw || typeof targetRaw.channel !== "string" || typeof targetRaw.to !== "string") {
     return undefined;
   }
 
