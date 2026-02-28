@@ -8,7 +8,7 @@ import type {
 } from "../providers/types.js";
 import type { ContainerManager } from "../sandbox/container-manager.js";
 import type { ChannelPlugin } from "../types/channels.js";
-import type { ClaudeModelTier, JinxConfig } from "../types/config.js";
+import type { ClaudeModelId, ClaudeModelTier, JinxConfig } from "../types/config.js";
 import type { MediaAttachment } from "../types/messages.js";
 import type { SessionStore, TranscriptTurn } from "../types/sessions.js";
 import { expandTilde } from "../infra/home-dir.js";
@@ -35,6 +35,7 @@ import { getComposioToolDefinitions } from "./tools/composio-tools.js";
 import { getCoreToolDefinitions } from "./tools/core-tools.js";
 import { getCronToolDefinitions } from "./tools/cron-tools.js";
 import { getExecToolDefinitions } from "./tools/exec-tools.js";
+import { getHostExecToolDefinitions } from "./tools/host-exec-tools.js";
 import { getMarathonToolDefinitions } from "./tools/marathon-tools.js";
 import { aggregateTools } from "./tools/mcp-bridge.js";
 import { getMemoryToolDefinitions } from "./tools/memory-tools.js";
@@ -218,8 +219,13 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
     );
   }
 
-  // 7. Load conversation history from transcript
-  const history = await loadHistory(transcriptPath);
+  // 7. Load conversation history from transcript (with session-type-aware limits)
+  const historyLimit = sessionKey.startsWith("heartbeat:")
+    ? MAX_HISTORY_TURNS_HEARTBEAT
+    : sessionKey.startsWith("cron:")
+      ? MAX_HISTORY_TURNS_CRON
+      : MAX_HISTORY_TURNS_CHAT;
+  const history = await loadHistory(transcriptPath, historyLimit);
 
   // 8. Record user turn in transcript (after loading history, before calling provider)
   // If media was attached, note it in the transcript text (don't store buffers)
@@ -302,11 +308,12 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
 
 /**
  * Max number of recent transcript turns to include as conversation history.
- * With auto-compaction enabled, this is a safety backstop rather than the
- * primary context limit. Compaction summarizes older turns before we hit
- * the context window, so we can afford a higher limit here.
+ * Separate limits for different session types to avoid sending expensive
+ * history context on lightweight turns (heartbeats, cron jobs).
  */
-const MAX_HISTORY_TURNS = 200;
+const MAX_HISTORY_TURNS_CHAT = 50;
+const MAX_HISTORY_TURNS_HEARTBEAT = 10;
+const MAX_HISTORY_TURNS_CRON = 20;
 
 /**
  * Load conversation history from the transcript file.
@@ -314,14 +321,15 @@ const MAX_HISTORY_TURNS = 200;
  * expected by the provider. Only user and assistant turns are included;
  * system turns (compaction summaries) are prepended as-is.
  */
-async function loadHistory(transcriptPath: string): Promise<HistoryTurn[]> {
+async function loadHistory(transcriptPath: string, maxTurns?: number): Promise<HistoryTurn[]> {
   const turns = await readTranscript(transcriptPath);
   if (turns.length === 0) {
     return [];
   }
 
   // Take recent turns, respecting the limit
-  const recent = turns.length > MAX_HISTORY_TURNS ? turns.slice(-MAX_HISTORY_TURNS) : turns;
+  const limit = maxTurns ?? MAX_HISTORY_TURNS_CHAT;
+  const recent = turns.length > limit ? turns.slice(-limit) : turns;
 
   const history: HistoryTurn[] = [];
   for (const turn of recent) {
@@ -379,10 +387,13 @@ export function assembleDefaultTools(
   isSystemTest?: boolean,
   /** Identity directory (where SOUL.md etc. live). Included in allowedDirs when provided. */
   identityDir?: string,
+  /** Model ID for context window calculations. */
+  modelId?: ClaudeModelId,
 ): AgentToolDefinition[] {
-  const allowedDirs = [
-    ...new Set([workspaceDir, ...(identityDir ? [identityDir] : []), memoryDir]),
-  ];
+  const hostExec = config?.sandbox?.hostExec === true;
+  const allowedDirs = hostExec
+    ? ["/"]
+    : [...new Set([workspaceDir, ...(identityDir ? [identityDir] : []), memoryDir])];
 
   const core = getCoreToolDefinitions({ allowedDirs, sessionType });
   const memory = isSystemTest ? [] : getMemoryToolDefinitions({ memoryDir, searchManager });
@@ -414,7 +425,7 @@ export function assembleDefaultTools(
 
   const session =
     sessionKey && sessions
-      ? getSessionToolDefinitions({ sessionKey, sessions, timezone: config?.timezone })
+      ? getSessionToolDefinitions({ sessionKey, sessions, timezone: config?.timezone, modelId })
       : [];
 
   const webSearch = config?.webSearch;
@@ -432,8 +443,12 @@ export function assembleDefaultTools(
     cacheTtlMinutes: webSearch?.cacheTtlMinutes,
   });
 
-  const exec =
-    config?.sandbox?.enabled !== false && containerManager && sessionKey
+  const exec = hostExec
+    ? getHostExecToolDefinitions({
+        timeoutMs: config?.sandbox?.timeoutMs ?? 300_000,
+        maxOutputBytes: config?.sandbox?.maxOutputBytes ?? 102_400,
+      })
+    : config?.sandbox?.enabled !== false && containerManager && sessionKey
       ? getExecToolDefinitions({
           workspaceDir,
           sandboxConfig: config!.sandbox,
