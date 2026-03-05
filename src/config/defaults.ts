@@ -52,10 +52,10 @@ export const DEFAULT_CONFIG: JinxConfig = {
   },
   gateway: {
     host: "127.0.0.1",
-    port: 18790,
+    port: 9790,
     http: {
       enabled: false,
-      port: 18791,
+      port: 9791,
       hooks: { enabled: false },
     },
   },
@@ -75,6 +75,7 @@ export const DEFAULT_CONFIG: JinxConfig = {
   },
   sandbox: {
     enabled: true,
+    hostExec: false,
     timeoutMs: 300_000,
     idleTimeoutMs: 900_000,
     maxOutputBytes: 524_288,
@@ -85,7 +86,7 @@ export const DEFAULT_CONFIG: JinxConfig = {
   },
   marathon: {
     enabled: true,
-    maxConcurrent: 1,
+    maxConcurrent: 5,
     chunkIntervalMs: 5000,
     maxChunks: 50,
     maxDurationHours: 12,

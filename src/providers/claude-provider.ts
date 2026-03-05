@@ -6,6 +6,7 @@ import type {
   ContentBlock,
   ImageBlockParam,
   ContentBlockParam,
+  ThinkingConfigParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import Anthropic from "@anthropic-ai/sdk";
 import type { SystemPromptBlock } from "../agents/system-prompt.js";
@@ -19,7 +20,12 @@ import type {
 } from "./types.js";
 import { createLogger } from "../infra/logger.js";
 import { resolveAuth } from "./auth.js";
-import { resolveModelString } from "./models.js";
+import {
+  getMaxOutputTokens,
+  resolveModelString,
+  supportsThinking,
+  getThinkingBudget,
+} from "./models.js";
 
 const logger = createLogger("claude");
 
@@ -35,8 +41,9 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
   const start = Date.now();
   const auth = resolveAuth();
   const modelString = resolveModelString(options.model);
+  const thinkingEnabled = supportsThinking(options.model);
 
-  logger.debug(`Starting agent turn with model=${modelString}`);
+  logger.debug(`Starting agent turn with model=${modelString}, thinking=${thinkingEnabled}`);
 
   const client = createClient(auth);
   const tools = buildToolDefinitions(options.tools);
@@ -45,6 +52,17 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
   const systemParam: string | TextBlockParam[] = options.systemPromptBlocks
     ? buildSystemContentBlocks(options.systemPromptBlocks)
     : options.systemPrompt;
+
+  // Build thinking config
+  const thinkingConfig: ThinkingConfigParam | undefined = thinkingEnabled
+    ? { type: "enabled", budget_tokens: getThinkingBudget(options.model) }
+    : undefined;
+
+  // When thinking is enabled, max_tokens must be > budget_tokens
+  // max_tokens is the TOTAL cap (thinking + output combined)
+  const maxTokens = thinkingEnabled
+    ? getMaxOutputTokens(options.model) + getThinkingBudget(options.model)
+    : getMaxOutputTokens(options.model);
 
   // Build messages: history turns first, then current prompt
   const messages: MessageParam[] = [];
@@ -72,13 +90,15 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
     // Use streaming to get text deltas in real-time
     const stream = client.messages.stream({
       model: modelString,
-      max_tokens: 16_384,
+      max_tokens: maxTokens,
       system: systemParam,
       messages,
       tools: tools.length > 0 ? tools : undefined,
+      ...(thinkingConfig ? { thinking: thinkingConfig } : {}),
     });
 
     // Stream text deltas to the caller as they arrive
+    // Note: thinking deltas are NOT streamed — only visible text output
     if (options.onDelta) {
       stream.on("text", (text) => {
         options.onDelta!(text);
@@ -94,6 +114,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
     totalCacheRead += response.usage.cache_read_input_tokens ?? 0;
 
     // Extract text and tool use blocks from the final message
+    // Filter out thinking blocks for our text extraction (but preserve them in conversation history)
     const textBlocks = response.content.filter(
       (b): b is ContentBlock & { type: "text" } => b.type === "text",
     );
@@ -102,6 +123,16 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
         b.type === "tool_use",
     );
     const responseText = textBlocks.map((b) => b.text).join("");
+
+    // Log thinking if present (for debugging, not sent to user)
+    if (thinkingEnabled) {
+      const thinkingBlocks = response.content.filter((b) => b.type === "thinking");
+      if (thinkingBlocks.length > 0) {
+        logger.debug(
+          `Thinking blocks: ${thinkingBlocks.length}, total thinking chars: ${thinkingBlocks.reduce((sum, b) => sum + ((b as any).thinking?.length ?? 0), 0)}`,
+        );
+      }
+    }
 
     // Record assistant message
     const agentMsg: AgentMessage = {
@@ -115,7 +146,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
     };
     agentMessages.push(agentMsg);
 
-    // Add assistant message to conversation
+    // Add assistant message to conversation — MUST include thinking blocks
+    // The API requires thinking blocks to be preserved in conversation history
     messages.push({ role: "assistant", content: response.content });
 
     // If no tool use or stop reason is "end_turn", we're done

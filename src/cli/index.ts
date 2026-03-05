@@ -36,10 +36,10 @@ export function createCli(): typeof program {
   // Lazy-loaded commands for startup performance
   program
     .command("onboard")
-    .description("Bootstrap home directory, config, and workspace templates")
+    .description("Interactive setup wizard for Jinx")
     .action(async () => {
-      const { onboardCommand } = await import("./commands/onboard.js");
-      await onboardCommand.parseAsync(process.argv.slice(2));
+      const { runOnboardCli } = await import("./commands/onboard.js");
+      await runOnboardCli();
     });
 
   program

@@ -29,7 +29,12 @@ export function createTelegramChannel(
   telegramConfig: TelegramChannelConfig,
   deps: DispatchDeps,
 ): ChannelPlugin {
-  const botToken = telegramConfig.botToken!;
+  const botToken = telegramConfig.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) {
+    throw new Error(
+      "Telegram bot token not found. Set botToken in config or TELEGRAM_BOT_TOKEN in .env",
+    );
+  }
   const streamingEnabled = telegramConfig.streaming !== false;
 
   let monitor: TelegramMonitor | undefined;

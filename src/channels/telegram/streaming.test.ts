@@ -8,29 +8,36 @@ vi.mock("./send.js", () => ({
     .fn()
     .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })),
   PARSE_ERR_RE: /can't parse entities|parse entities|find end of the entity/i,
+  getRateLimitWaitMs: vi.fn().mockReturnValue(0),
+  setRateLimit: vi.fn(),
+  extractRetryAfter: vi.fn().mockReturnValue(30),
 }));
 
 // Mock format to pass through
 vi.mock("./format.js", () => ({
   markdownToTelegramHtml: (text: string) => text,
+  markdownToTelegramChunks: (text: string) => [{ html: text, plainLength: text.length }],
 }));
 
 let sendMock: ReturnType<typeof vi.fn>;
-let fetchRetryMock: ReturnType<typeof vi.fn>;
+const fetchSpy = vi.fn();
 
 beforeEach(async () => {
   const mod = await import("./send.js");
   sendMock = vi.mocked(mod.sendMessageTelegram);
-  fetchRetryMock = vi.mocked(mod.fetchWithRetry);
   // Reset both call counts AND implementations to default
   sendMock.mockReset();
   sendMock.mockResolvedValue(1);
-  fetchRetryMock.mockReset();
-  fetchRetryMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+  // Mock global fetch for editMessageText calls (used by editMessageFinal/editMessageStreaming)
+  fetchSpy.mockReset();
+  fetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  vi.stubGlobal("fetch", fetchSpy);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("TelegramStreamWriter", () => {
@@ -92,9 +99,9 @@ describe("TelegramStreamWriter", () => {
 
     // Initial message sent once via sendMessageTelegram
     expect(sendMock).toHaveBeenCalledTimes(1);
-    // Edit should have been called via fetchWithRetry (editMessageText)
-    expect(fetchRetryMock).toHaveBeenCalledTimes(1);
-    const callUrl = fetchRetryMock.mock.calls[0]![0] as string;
+    // Edit should have been called via fetch (editMessageText)
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const callUrl = fetchSpy.mock.calls[0]![0] as string;
     expect(callUrl).toContain("editMessageText");
   });
 

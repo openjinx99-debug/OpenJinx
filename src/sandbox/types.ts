@@ -13,6 +13,8 @@ export type ContainerRuntime = "apple-container";
 /** Configuration for the sandbox subsystem. */
 export interface SandboxConfig {
   enabled: boolean;
+  /** When true, exec runs directly on the host instead of in a container. */
+  hostExec: boolean;
   /** Default command timeout in milliseconds. */
   timeoutMs: number;
   /** Idle timeout before destroying a persistent container (ms). */

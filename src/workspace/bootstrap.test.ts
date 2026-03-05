@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
-import { ensureWorkspace } from "./bootstrap.js";
+import { ensureWorkspace, populateIdentityName } from "./bootstrap.js";
 import { WORKSPACE_FILES } from "./loader.js";
 
 describe("ensureWorkspace", () => {
@@ -80,5 +80,51 @@ describe("ensureWorkspace", () => {
     expect(fs.existsSync(workspaceDir)).toBe(true);
     // Spot check one file
     expect(fs.existsSync(path.join(workspaceDir, "SOUL.md"))).toBe(true);
+  });
+});
+
+describe("populateIdentityName", () => {
+  const PLACEHOLDER = "<!-- Choose a name during bootstrap -->";
+
+  let tmpDir: string;
+
+  afterEach(async () => {
+    if (tmpDir) {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces the placeholder with the chosen name", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "jinx-identity-"));
+    const identityPath = path.join(tmpDir, "IDENTITY.md");
+    const original = `# Identity\n\n## Name\n\n${PLACEHOLDER}\n`;
+    await fsp.writeFile(identityPath, original, "utf-8");
+
+    await populateIdentityName(tmpDir, "Pepper");
+
+    const content = await fsp.readFile(identityPath, "utf-8");
+    expect(content).toContain("Pepper");
+    expect(content).not.toContain(PLACEHOLDER);
+  });
+
+  it("is idempotent — does not double-replace on second call", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "jinx-identity-"));
+    const identityPath = path.join(tmpDir, "IDENTITY.md");
+    const original = `# Identity\n\n## Name\n\n${PLACEHOLDER}\n`;
+    await fsp.writeFile(identityPath, original, "utf-8");
+
+    await populateIdentityName(tmpDir, "Pepper");
+    await populateIdentityName(tmpDir, "ShouldNotAppear");
+
+    const content = await fsp.readFile(identityPath, "utf-8");
+    expect(content).toContain("Pepper");
+    expect(content).not.toContain("ShouldNotAppear");
+    expect(content).not.toContain(PLACEHOLDER);
+  });
+
+  it("no-ops when IDENTITY.md does not exist", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "jinx-identity-"));
+    // No IDENTITY.md created — should not throw
+    await expect(populateIdentityName(tmpDir, "Pepper")).resolves.toBeUndefined();
   });
 });

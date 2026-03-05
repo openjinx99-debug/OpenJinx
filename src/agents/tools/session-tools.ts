@@ -1,13 +1,18 @@
 import type { AgentToolDefinition } from "../../providers/types.js";
+import type { ClaudeModelId } from "../../types/config.js";
 import type { SessionStore } from "../../types/sessions.js";
 import { formatUserTime, resolveUserTimezone } from "../../infra/date-time.js";
 import { formatDurationHuman } from "../../infra/format-time.js";
 import { readMetrics, computeUsageSummary } from "../../infra/metrics.js";
+import { getContextWindow } from "../../providers/models.js";
+import { estimateTranscriptTokens } from "../../sessions/compaction.js";
+import { readTranscript } from "../../sessions/transcript.js";
 
 export interface SessionToolContext {
   sessionKey: string;
   sessions: SessionStore;
   timezone?: string;
+  modelId?: ClaudeModelId;
 }
 
 /**
@@ -44,6 +49,21 @@ export function getSessionToolDefinitions(ctx: SessionToolContext): AgentToolDef
           `📊 Session: ${session.turnCount} turns, started ${age === "just now" ? "just now" : `${age} ago`}`,
           `💬 Tokens: ${session.totalInputTokens.toLocaleString()} in / ${session.totalOutputTokens.toLocaleString()} out`,
         ];
+
+        // Context window usage estimate
+        try {
+          if (session.transcriptPath) {
+            const turns = await readTranscript(session.transcriptPath);
+            const estimatedTokens = estimateTranscriptTokens(turns);
+            const contextWindow = getContextWindow(ctx.modelId ?? "sonnet");
+            const pct = Math.round((estimatedTokens / contextWindow) * 100);
+            lines.push(
+              `📐 Context: ~${estimatedTokens.toLocaleString()}/${contextWindow.toLocaleString()} tokens (${pct}%)`,
+            );
+          }
+        } catch {
+          // Transcript read failed — not critical
+        }
 
         // Add cache stats from metrics (last 1 hour for this session)
         try {

@@ -41,3 +41,28 @@ async function fileExists(filePath: string): Promise<boolean> {
     return false;
   }
 }
+
+const IDENTITY_NAME_PLACEHOLDER = "<!-- Choose a name during bootstrap -->";
+
+/**
+ * Replace the name placeholder in IDENTITY.md with the chosen assistant name.
+ * No-ops if the file is missing or the placeholder has already been replaced.
+ */
+export async function populateIdentityName(workspaceDir: string, name: string): Promise<void> {
+  const identityPath = path.join(workspaceDir, "IDENTITY.md");
+
+  let content: string;
+  try {
+    content = await fs.readFile(identityPath, "utf-8");
+  } catch {
+    return;
+  }
+
+  if (!content.includes(IDENTITY_NAME_PLACEHOLDER)) {
+    return;
+  }
+
+  const updated = content.replace(IDENTITY_NAME_PLACEHOLDER, name);
+  await fs.writeFile(identityPath, updated, "utf-8");
+  logger.info(`Identity name set to: ${name}`);
+}

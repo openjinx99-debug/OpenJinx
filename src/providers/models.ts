@@ -33,6 +33,38 @@ export function getContextWindow(_modelId: ClaudeModelId): number {
   return 200_000;
 }
 
+/** Max output tokens per model (text output only, excluding thinking). */
+const MAX_OUTPUT_TOKENS: Record<ClaudeModelId, number> = {
+  opus: 32_768,
+  sonnet: 16_384,
+  haiku: 8_192,
+};
+
+/** Get the max output tokens for a model. */
+export function getMaxOutputTokens(modelId: ClaudeModelId): number {
+  return MAX_OUTPUT_TOKENS[modelId] ?? 16_384;
+}
+
+/** Models that support extended thinking. */
+const THINKING_MODELS: Set<ClaudeModelId> = new Set(["opus", "sonnet"]);
+
+/** Thinking budget per model (tokens allocated to internal reasoning). */
+const THINKING_BUDGET: Record<ClaudeModelId, number> = {
+  opus: 10_000,
+  sonnet: 8_000,
+  haiku: 0,
+};
+
+/** Check if a model supports extended thinking. */
+export function supportsThinking(modelId: ClaudeModelId): boolean {
+  return THINKING_MODELS.has(modelId);
+}
+
+/** Get the thinking budget for a model. Returns 0 if thinking not supported. */
+export function getThinkingBudget(modelId: ClaudeModelId): number {
+  return THINKING_BUDGET[modelId] ?? 0;
+}
+
 /** Check if a model ID is valid. */
 export function isValidModelId(id: string): id is ClaudeModelId {
   return id === "opus" || id === "sonnet" || id === "haiku";
