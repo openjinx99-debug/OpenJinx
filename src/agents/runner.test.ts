@@ -390,7 +390,7 @@ describe("runAgent – compaction wiring", () => {
 
     expect(compactTranscript).toHaveBeenCalledWith(
       "/tmp/transcript.jsonl",
-      200_000, // context window for sonnet
+      1_000_000, // context window for sonnet
       expect.any(Function),
     );
   });
@@ -442,7 +442,7 @@ describe("runAgent – pre-compaction flush wiring", () => {
     expect(flushMemoryBeforeCompaction).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "test-session",
-        contextSummary: expect.stringContaining("200000"),
+        contextSummary: expect.stringContaining("1000000"),
       }),
     );
     expect(callOrder).toEqual(["flush", "compact"]);

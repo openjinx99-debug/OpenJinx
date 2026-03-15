@@ -370,7 +370,7 @@ describe("runAgentTurn", () => {
     expect(callArgs.system[0].type).toBe("text");
     expect(callArgs.system[0].text).toBe("Static instruction");
     // First block (last cacheable) should have cache_control
-    expect(callArgs.system[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(callArgs.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     // Second block (dynamic) should NOT have cache_control
     expect(callArgs.system[1].cache_control).toBeUndefined();
   });
@@ -396,7 +396,7 @@ describe("buildToolDefinitions — cache_control", () => {
 
     expect(result[0].cache_control).toBeUndefined();
     expect(result[1].cache_control).toBeUndefined();
-    expect(result[2].cache_control).toEqual({ type: "ephemeral" });
+    expect(result[2].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
   });
 
   it("adds cache_control when there is only one tool", () => {
@@ -405,7 +405,7 @@ describe("buildToolDefinitions — cache_control", () => {
     ];
     const result = _internal.buildToolDefinitions(tools);
 
-    expect(result[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(result[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
   });
 
   it("returns empty array with no cache_control for no tools", () => {
@@ -584,7 +584,7 @@ describe("buildSystemContentBlocks", () => {
     expect(result[0].cache_control).toBeUndefined();
     expect(result[1].cache_control).toBeUndefined();
     // Block 2 — last cacheable
-    expect(result[2].cache_control).toEqual({ type: "ephemeral" });
+    expect(result[2].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     // Block 3 — dynamic, no cache_control
     expect(result[3].cache_control).toBeUndefined();
   });
@@ -609,7 +609,7 @@ describe("buildSystemContentBlocks", () => {
 
     expect(result).toHaveLength(2);
     expect(result[0].text).toBe("Keep this");
-    expect(result[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(result[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     expect(result[1].text).toBe("And this");
   });
 

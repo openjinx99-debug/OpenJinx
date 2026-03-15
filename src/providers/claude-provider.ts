@@ -259,7 +259,7 @@ function buildToolDefinitions(tools?: AgentToolDefinition[]): Tool[] {
     description: t.description,
     input_schema: t.inputSchema as Tool["input_schema"],
     // Cache breakpoint on last tool — caches all tool schemas as a prefix
-    ...(i === lastIdx ? { cache_control: { type: "ephemeral" as const } } : {}),
+    ...(i === lastIdx ? { cache_control: { type: "ephemeral" as const, ttl: "1h" } } : {}),
   }));
 }
 
@@ -281,7 +281,7 @@ function buildSystemContentBlocks(blocks: SystemPromptBlock[]): TextBlockParam[]
   return nonEmpty.map((block, i) => ({
     type: "text" as const,
     text: block.text,
-    ...(i === lastCacheIdx ? { cache_control: { type: "ephemeral" as const } } : {}),
+    ...(i === lastCacheIdx ? { cache_control: { type: "ephemeral" as const, ttl: "1h" } } : {}),
   }));
 }
 

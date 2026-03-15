@@ -153,7 +153,7 @@ function makeSystemPromptOptions(tools: AgentToolDefinition[]): SystemPromptOpti
     "- Claude provider uses stream: false for full responses per turn",
     "- Session lanes: max 1 concurrent agent turn per session key",
     "- Transcript compaction when approaching context window limits",
-    "- Metrics logged to JSONL at ~/.jinx/metrics.jsonl",
+    "- Metrics logged to JSONL at ~/.powder/metrics.jsonl",
   ].join("\n");
 
   return {
@@ -501,7 +501,7 @@ describeIf("prompt caching (live API)", () => {
     for (let i = 0; i < sdkTools.length - 1; i++) {
       expect(sdkTools[i].cache_control).toBeUndefined();
     }
-    expect(sdkTools[sdkTools.length - 1].cache_control).toEqual({ type: "ephemeral" });
+    expect(sdkTools[sdkTools.length - 1].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
   });
 
   it("system blocks get cache_control on last cacheable block only", () => {
