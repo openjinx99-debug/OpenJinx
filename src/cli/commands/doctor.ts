@@ -144,6 +144,8 @@ async function checkClaudeAuth(): Promise<CheckResult> {
       headers["x-api-key"] = auth.key;
     } else {
       headers["authorization"] = `Bearer ${auth.token}`;
+      // OAuth requires the beta header for the API to accept Bearer tokens
+      headers["anthropic-beta"] = "oauth-2025-04-20";
     }
 
     const resp = await fetchWithRetry(

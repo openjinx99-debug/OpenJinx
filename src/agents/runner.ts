@@ -333,8 +333,16 @@ async function loadHistory(transcriptPath: string, maxTurns?: number): Promise<H
 
   const history: HistoryTurn[] = [];
   for (const turn of recent) {
-    if (turn.role === "user" || turn.role === "assistant") {
-      history.push({ role: turn.role, content: turn.text });
+    if (turn.role === "user") {
+      history.push({ role: "user", content: turn.text });
+    } else if (turn.role === "assistant") {
+      // Assistant content MUST be ContentBlock[] (not plain string) because
+      // the Anthropic API rejects string-content assistant messages when
+      // extended thinking is enabled. Always use array format for safety.
+      history.push({
+        role: "assistant",
+        content: [{ type: "text" as const, text: turn.text }],
+      });
     } else if (turn.role === "system" && turn.isCompaction) {
       // Compaction summaries go as user messages so Claude sees the context
       history.push({ role: "user", content: `[Prior conversation summary]\n\n${turn.text}` });
@@ -352,10 +360,27 @@ async function loadHistory(transcriptPath: string, maxTurns?: number): Promise<H
   for (const turn of history) {
     const prev = merged[merged.length - 1];
     if (prev && prev.role === turn.role) {
-      prev.content += "\n\n" + turn.content;
+      // For string content (user), concatenate. For array content (assistant), append blocks.
+      if (typeof prev.content === "string" && typeof turn.content === "string") {
+        prev.content += "\n\n" + turn.content;
+      } else if (Array.isArray(prev.content) && Array.isArray(turn.content)) {
+        prev.content.push(...turn.content);
+      } else {
+        // Mixed types — shouldn't happen, but push as new turn
+        merged.push({ ...turn });
+        continue;
+      }
     } else {
       merged.push({ ...turn });
     }
+  }
+
+  // Strip trailing user messages from history. These are unanswered turns from
+  // failed prior attempts (e.g. API errors). If we include them, the current
+  // user prompt gets appended immediately after → two consecutive user messages
+  // → Anthropic 400 "messages must alternate user/assistant".
+  while (merged.length > 0 && merged[merged.length - 1].role === "user") {
+    merged.pop();
   }
 
   if (merged.length > 0) {

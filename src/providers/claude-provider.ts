@@ -1,4 +1,5 @@
 import type {
+  Message,
   MessageParam,
   ToolResultBlockParam,
   Tool,
@@ -25,6 +26,7 @@ import {
   resolveModelString,
   supportsThinking,
   getThinkingBudget,
+  getFallbackModel,
 } from "./models.js";
 
 const logger = createLogger("claude");
@@ -48,7 +50,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
   const client = createClient(auth);
   const tools = buildToolDefinitions(options.tools);
 
-  // Build system parameter: use structured blocks for caching when available
+  // Build system parameter: use structured blocks for caching when available.
   const systemParam: string | TextBlockParam[] = options.systemPromptBlocks
     ? buildSystemContentBlocks(options.systemPromptBlocks)
     : options.systemPrompt;
@@ -87,26 +89,74 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentResu
   while (turns < maxTurns) {
     turns++;
 
-    // Use streaming to get text deltas in real-time
-    const stream = client.messages.stream({
-      model: modelString,
-      max_tokens: maxTokens,
-      system: systemParam,
-      messages,
-      tools: tools.length > 0 ? tools : undefined,
-      ...(thinkingConfig ? { thinking: thinkingConfig } : {}),
-    });
+    // Use streaming to get text deltas in real-time, with retry on 500 errors
+    const MAX_RETRIES = 3;
+    let response: Message;
+    let lastError: unknown;
 
-    // Stream text deltas to the caller as they arrive
-    // Note: thinking deltas are NOT streamed — only visible text output
-    if (options.onDelta) {
-      stream.on("text", (text) => {
-        options.onDelta!(text);
-      });
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const requestPayload = {
+          model: modelString,
+          max_tokens: maxTokens,
+          system: systemParam,
+          messages,
+          tools: tools.length > 0 ? tools : undefined,
+          ...(thinkingConfig ? { thinking: thinkingConfig } : {}),
+        };
+        // DEBUG: log request shape on first attempt to help diagnose 400 errors
+        if (attempt === 0) {
+          const systemLen =
+            typeof requestPayload.system === "string"
+              ? requestPayload.system.length
+              : Array.isArray(requestPayload.system)
+                ? requestPayload.system.reduce(
+                    (s: number, b: { text?: string }) => s + (b.text?.length ?? 0),
+                    0,
+                  )
+                : 0;
+          const msgRoles = requestPayload.messages.map((m: { role: string }) => m.role).join(",");
+          const toolCount = requestPayload.tools?.length ?? 0;
+          logger.info(
+            `API request: model=${requestPayload.model} max_tokens=${requestPayload.max_tokens} system_len=${systemLen} msgs=[${msgRoles}] tools=${toolCount} thinking=${!!requestPayload.thinking}`,
+          );
+        }
+        const stream = client.messages.stream(requestPayload);
+
+        // Stream text deltas to the caller as they arrive
+        // Note: thinking deltas are NOT streamed — only visible text output
+        if (options.onDelta) {
+          stream.on("text", (text) => {
+            options.onDelta!(text);
+          });
+        }
+
+        response = await stream.finalMessage();
+        break;
+      } catch (err: unknown) {
+        lastError = err;
+        const status = (err as { status?: number }).status;
+        if (status === 500 && attempt < MAX_RETRIES) {
+          const delayMs = 1000 * (attempt + 1);
+          logger.warn(
+            `API returned 500, retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+          );
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        // Model fallback on 400: token may lack access to this model tier
+        if (status === 400 && !options._fallbackAttempt) {
+          const fallback = getFallbackModel(options.model);
+          if (fallback) {
+            logger.warn(`API returned 400 for model=${modelString}, falling back to ${fallback}`);
+            return runAgentTurn({ ...options, model: fallback, _fallbackAttempt: true });
+          }
+        }
+        throw err;
+      }
     }
 
-    // Wait for the complete response
-    const response = await stream.finalMessage();
+    response = response!;
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
@@ -258,8 +308,8 @@ function buildToolDefinitions(tools?: AgentToolDefinition[]): Tool[] {
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema as Tool["input_schema"],
-    // Cache breakpoint on last tool — caches all tool schemas as a prefix
-    ...(i === lastIdx ? { cache_control: { type: "ephemeral" as const, ttl: "1h" } } : {}),
+    // Cache breakpoint on last tool — caches all tool schemas as a prefix.
+    ...(i === lastIdx ? { cache_control: { type: "ephemeral" as const } } : {}),
   }));
 }
 
@@ -281,7 +331,7 @@ function buildSystemContentBlocks(blocks: SystemPromptBlock[]): TextBlockParam[]
   return nonEmpty.map((block, i) => ({
     type: "text" as const,
     text: block.text,
-    ...(i === lastCacheIdx ? { cache_control: { type: "ephemeral" as const, ttl: "1h" } } : {}),
+    ...(i === lastCacheIdx ? { cache_control: { type: "ephemeral" as const } } : {}),
   }));
 }
 

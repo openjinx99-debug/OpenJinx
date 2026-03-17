@@ -120,7 +120,7 @@ describe("runAgentTurn", () => {
 
     expect(result.text).toBe("Hello! How can I help?");
     expect(result.hitTurnLimit).toBe(false);
-    expect(result.model).toBe("claude-sonnet-4-6");
+    expect(result.model).toBe("claude-sonnet-4-5-20250929");
     expect(result.usage.inputTokens).toBe(100);
     expect(result.usage.outputTokens).toBe(50);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
@@ -281,7 +281,7 @@ describe("runAgentTurn", () => {
     mockStream.mockReturnValue(makeMockStream(makeResponse("ok")));
 
     const opusResult = await runAgentTurn({ ...baseOptions, model: "opus" });
-    expect(opusResult.model).toBe("claude-opus-4-6");
+    expect(opusResult.model).toBe("claude-opus-4-20250514");
 
     const haikuResult = await runAgentTurn({ ...baseOptions, model: "haiku" });
     expect(haikuResult.model).toBe("claude-haiku-4-5-20251001");
@@ -370,7 +370,7 @@ describe("runAgentTurn", () => {
     expect(callArgs.system[0].type).toBe("text");
     expect(callArgs.system[0].text).toBe("Static instruction");
     // First block (last cacheable) should have cache_control
-    expect(callArgs.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(callArgs.system[0].cache_control).toEqual({ type: "ephemeral" });
     // Second block (dynamic) should NOT have cache_control
     expect(callArgs.system[1].cache_control).toBeUndefined();
   });
@@ -396,7 +396,7 @@ describe("buildToolDefinitions — cache_control", () => {
 
     expect(result[0].cache_control).toBeUndefined();
     expect(result[1].cache_control).toBeUndefined();
-    expect(result[2].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(result[2].cache_control).toEqual({ type: "ephemeral" });
   });
 
   it("adds cache_control when there is only one tool", () => {
@@ -405,7 +405,7 @@ describe("buildToolDefinitions — cache_control", () => {
     ];
     const result = _internal.buildToolDefinitions(tools);
 
-    expect(result[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(result[0].cache_control).toEqual({ type: "ephemeral" });
   });
 
   it("returns empty array with no cache_control for no tools", () => {
@@ -584,7 +584,7 @@ describe("buildSystemContentBlocks", () => {
     expect(result[0].cache_control).toBeUndefined();
     expect(result[1].cache_control).toBeUndefined();
     // Block 2 — last cacheable
-    expect(result[2].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(result[2].cache_control).toEqual({ type: "ephemeral" });
     // Block 3 — dynamic, no cache_control
     expect(result[3].cache_control).toBeUndefined();
   });
@@ -609,7 +609,7 @@ describe("buildSystemContentBlocks", () => {
 
     expect(result).toHaveLength(2);
     expect(result[0].text).toBe("Keep this");
-    expect(result[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(result[0].cache_control).toEqual({ type: "ephemeral" });
     expect(result[1].text).toBe("And this");
   });
 
@@ -617,5 +617,82 @@ describe("buildSystemContentBlocks", () => {
     const result = _internal.buildSystemContentBlocks([{ text: "Hello", cacheable: true }]);
 
     expect(result[0].type).toBe("text");
+  });
+});
+
+describe("runAgentTurn — model fallback on 400", () => {
+  beforeEach(() => {
+    mockStream.mockReset();
+  });
+
+  const baseOptions: AgentTurnOptions = {
+    prompt: "Hello",
+    systemPrompt: "Be helpful.",
+    model: "sonnet",
+  };
+
+  it("falls back to haiku on 400 when using sonnet", async () => {
+    // First call (sonnet) → 400
+    mockStream.mockImplementationOnce(() => ({
+      on() {
+        return this;
+      },
+      finalMessage() {
+        const err = new Error("Bad Request") as Error & { status: number };
+        err.status = 400;
+        return Promise.reject(err);
+      },
+    }));
+    // Second call (haiku fallback) → success
+    mockStream.mockReturnValueOnce(makeMockStream(makeResponse("Hello from haiku!")));
+
+    const result = await runAgentTurn(baseOptions);
+
+    expect(result.text).toBe("Hello from haiku!");
+    expect(result.model).toBe("claude-haiku-4-5-20251001");
+    expect(mockStream).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fallback twice (haiku 400 throws)", async () => {
+    // sonnet → 400, falls back to haiku
+    mockStream.mockImplementationOnce(() => ({
+      on() {
+        return this;
+      },
+      finalMessage() {
+        const err = new Error("Bad Request") as Error & { status: number };
+        err.status = 400;
+        return Promise.reject(err);
+      },
+    }));
+    // haiku → also 400, should throw (already fell back once)
+    mockStream.mockImplementationOnce(() => ({
+      on() {
+        return this;
+      },
+      finalMessage() {
+        const err = new Error("Bad Request") as Error & { status: number };
+        err.status = 400;
+        return Promise.reject(err);
+      },
+    }));
+
+    await expect(runAgentTurn(baseOptions)).rejects.toThrow("Bad Request");
+  });
+
+  it("does not fallback on non-400 errors", async () => {
+    mockStream.mockImplementationOnce(() => ({
+      on() {
+        return this;
+      },
+      finalMessage() {
+        const err = new Error("Forbidden") as Error & { status: number };
+        err.status = 403;
+        return Promise.reject(err);
+      },
+    }));
+
+    await expect(runAgentTurn(baseOptions)).rejects.toThrow("Forbidden");
+    expect(mockStream).toHaveBeenCalledTimes(1);
   });
 });

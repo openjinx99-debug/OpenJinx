@@ -1,9 +1,11 @@
-import type { ClaudeModelId, ClaudeModelTier, ModelRef } from "../types/config.js";
+import type { ClaudeModelId, ClaudeModelTier } from "../types/config.js";
 
 /** Map from our model IDs to the actual Claude API model strings. */
 const MODEL_ID_MAP: Record<ClaudeModelId, string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
+  // Use dated model IDs — the short aliases (claude-sonnet-4-6, claude-opus-4-6)
+  // have a server-side bug that returns 500 on larger payloads (as of 2026-03-16).
+  opus: "claude-opus-4-20250514",
+  sonnet: "claude-sonnet-4-5-20250929",
   haiku: "claude-haiku-4-5-20251001",
 };
 
@@ -14,28 +16,20 @@ const TIER_DEFAULTS: Record<ClaudeModelTier, ClaudeModelId> = {
   light: "haiku",
 };
 
-/** Check if a model ref routes to Ollama. */
-export function isOllamaModel(ref: ModelRef): boolean {
-  return ref === "ollama";
-}
-
-/** Resolve a model ID to the full Claude API model string. Throws for "ollama". */
-export function resolveModelString(modelId: ModelRef): string {
-  if (modelId === "ollama") {
-    return "ollama"; // Not a Claude model — caller should route to Ollama provider
-  }
+/** Resolve a model ID to the full Claude API model string. */
+export function resolveModelString(modelId: ClaudeModelId): string {
   return MODEL_ID_MAP[modelId];
 }
 
-/** Resolve a model tier to a model ref using config or defaults. */
+/** Resolve a model tier to a model ID using config or defaults. */
 export function resolveModelForTier(
   tier: ClaudeModelTier,
-  config?: Partial<Record<ClaudeModelTier, ModelRef>>,
-): ModelRef {
+  config?: Partial<Record<ClaudeModelTier, ClaudeModelId>>,
+): ClaudeModelId {
   return config?.[tier] ?? TIER_DEFAULTS[tier];
 }
 
-/** Context window sizes per Claude model. */
+/** Context window size per model. */
 const CONTEXT_WINDOWS: Record<ClaudeModelId, number> = {
   opus: 1_000_000,
   sonnet: 1_000_000,
@@ -43,11 +37,7 @@ const CONTEXT_WINDOWS: Record<ClaudeModelId, number> = {
 };
 
 /** Get context window size for a model. */
-export function getContextWindow(modelId: ModelRef): number {
-  if (modelId === "ollama") {
-    // Qwen 3.5 supports 128K context; conservative default
-    return 128_000;
-  }
+export function getContextWindow(modelId: ClaudeModelId): number {
   return CONTEXT_WINDOWS[modelId] ?? 200_000;
 }
 
@@ -59,10 +49,7 @@ const MAX_OUTPUT_TOKENS: Record<ClaudeModelId, number> = {
 };
 
 /** Get the max output tokens for a model. */
-export function getMaxOutputTokens(modelId: ModelRef): number {
-  if (modelId === "ollama") {
-    return 8_192;
-  }
+export function getMaxOutputTokens(modelId: ClaudeModelId): number {
   return MAX_OUTPUT_TOKENS[modelId] ?? 16_384;
 }
 
@@ -77,27 +64,28 @@ const THINKING_BUDGET: Record<ClaudeModelId, number> = {
 };
 
 /** Check if a model supports extended thinking. */
-export function supportsThinking(modelId: ModelRef): boolean {
-  if (modelId === "ollama") {
-    return false;
-  }
+export function supportsThinking(modelId: ClaudeModelId): boolean {
   return THINKING_MODELS.has(modelId);
 }
 
 /** Get the thinking budget for a model. Returns 0 if thinking not supported. */
-export function getThinkingBudget(modelId: ModelRef): number {
-  if (modelId === "ollama") {
-    return 0;
-  }
+export function getThinkingBudget(modelId: ClaudeModelId): number {
   return THINKING_BUDGET[modelId] ?? 0;
 }
 
-/** Check if a model ID is a valid Claude model. */
-export function isValidModelId(id: string): id is ClaudeModelId {
-  return id === "opus" || id === "sonnet" || id === "haiku";
+/** Fallback chain: opus → sonnet → haiku → undefined. */
+const MODEL_FALLBACK: Record<ClaudeModelId, ClaudeModelId | undefined> = {
+  opus: "sonnet",
+  sonnet: "haiku",
+  haiku: undefined,
+};
+
+/** Get the next fallback model when the current one is inaccessible. */
+export function getFallbackModel(modelId: ClaudeModelId): ClaudeModelId | undefined {
+  return MODEL_FALLBACK[modelId];
 }
 
-/** Check if a string is a valid model ref (Claude or Ollama). */
-export function isValidModelRef(id: string): id is ModelRef {
-  return id === "opus" || id === "sonnet" || id === "haiku" || id === "ollama";
+/** Check if a model ID is valid. */
+export function isValidModelId(id: string): id is ClaudeModelId {
+  return id === "opus" || id === "sonnet" || id === "haiku";
 }

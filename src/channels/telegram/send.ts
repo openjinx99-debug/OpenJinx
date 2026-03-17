@@ -19,6 +19,14 @@ export const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the
  */
 const globalRateLimitUntil = new Map<string, number>();
 
+/**
+ * Maximum retry_after we'll honour from Telegram (5 minutes).
+ * Telegram sometimes returns absurd values (55 000 s) when a bot is in a
+ * 429 storm.  Capping prevents a single bad response from blocking the bot
+ * for hours after the storm passes.
+ */
+const MAX_RATE_LIMIT_SECONDS = 300;
+
 /** Check if a bot is currently rate-limited. Returns ms to wait, or 0. */
 export function getRateLimitWaitMs(botToken: string): number {
   const until = globalRateLimitUntil.get(botToken) ?? 0;
@@ -26,14 +34,18 @@ export function getRateLimitWaitMs(botToken: string): number {
   return wait > 0 ? wait : 0;
 }
 
-/** Record a rate limit for a bot. */
+/** Record a rate limit for a bot. Caps at MAX_RATE_LIMIT_SECONDS to avoid long bans from 429 storms. */
 export function setRateLimit(botToken: string, retryAfterSeconds: number): void {
-  const until = Date.now() + retryAfterSeconds * 1000;
+  const capped = Math.min(retryAfterSeconds, MAX_RATE_LIMIT_SECONDS);
+  if (capped < retryAfterSeconds) {
+    logger.warn(`Telegram retry_after=${retryAfterSeconds}s exceeds cap, clamping to ${capped}s`);
+  }
+  const until = Date.now() + capped * 1000;
   const existing = globalRateLimitUntil.get(botToken) ?? 0;
   // Only extend, never shorten
   if (until > existing) {
     globalRateLimitUntil.set(botToken, until);
-    logger.warn(`Global rate limit set for ${retryAfterSeconds}s (until ${new Date(until).toISOString()})`);
+    logger.warn(`Global rate limit set for ${capped}s (until ${new Date(until).toISOString()})`);
   }
 }
 
@@ -101,12 +113,13 @@ export async function sendMessageTelegram(params: SendTelegramParams): Promise<n
 
     const body = await resp.text();
 
-    // 429 — rate limited. Record globally, wait, retry.
+    // 429 — rate limited. Record globally (capped), wait, retry.
     if (resp.status === 429) {
       const retryAfter = extractRetryAfter(body);
       setRateLimit(botToken, retryAfter);
+      const actualWait = Math.ceil(getRateLimitWaitMs(botToken) / 1000);
       logger.warn(
-        `Rate limited on send — waiting ${retryAfter}s (attempt ${attempt + 1}/${maxAttempts})`,
+        `Rate limited on send — waiting ${actualWait}s (attempt ${attempt + 1}/${maxAttempts})`,
       );
       // waitForRateLimit at the top of the next iteration will handle the wait
       continue;

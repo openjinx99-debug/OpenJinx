@@ -1,3 +1,4 @@
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import type { SystemPromptBlock } from "../agents/system-prompt.js";
 import type { ClaudeModelId } from "../types/config.js";
 import type { MediaAttachment } from "../types/messages.js";
@@ -40,10 +41,15 @@ export interface AgentToolCall {
   output?: unknown;
 }
 
-/** A prior conversation turn for multi-turn context. */
+/**
+ * A prior conversation turn for multi-turn context.
+ * Assistant content MUST be ContentBlockParam[] (not string) when extended
+ * thinking is enabled — the API rejects plain-string assistant messages in
+ * that mode. We always use ContentBlockParam[] for assistant turns to be safe.
+ */
 export interface HistoryTurn {
   role: "user" | "assistant";
-  content: string;
+  content: string | ContentBlockParam[];
 }
 
 /** Options for running an agent turn. */
@@ -63,6 +69,8 @@ export interface AgentTurnOptions {
   media?: MediaAttachment[];
   /** Callback for streaming partial messages. */
   onDelta?: (text: string) => void;
+  /** Internal flag: set when retrying with a fallback model to prevent infinite recursion. */
+  _fallbackAttempt?: boolean;
 }
 
 /** A tool definition to pass to the Claude Agent SDK. */

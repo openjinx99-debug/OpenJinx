@@ -4,6 +4,9 @@ import {
   sendMessageTelegram,
   sendTypingIndicator,
   startTypingLoop,
+  setRateLimit,
+  getRateLimitWaitMs,
+  extractRetryAfter,
 } from "./send.js";
 
 function mockTelegramResponse(result: unknown, ok = true): Response {
@@ -173,6 +176,45 @@ describe("startTypingLoop", () => {
 
     stop();
     expect(typeof stop).toBe("function");
+  });
+});
+
+describe("setRateLimit — cap", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("caps absurd retry_after to 300s", () => {
+    // Use a unique token so we don't pollute other tests
+    const token = "cap-test-token";
+    setRateLimit(token, 55_000);
+    const waitMs = getRateLimitWaitMs(token);
+    // Should be ≤ 300s (300_000ms) + small timing margin
+    expect(waitMs).toBeLessThanOrEqual(301_000);
+    expect(waitMs).toBeGreaterThan(0);
+  });
+
+  it("passes through reasonable retry_after unchanged", () => {
+    const token = "reasonable-test-token";
+    setRateLimit(token, 30);
+    const waitMs = getRateLimitWaitMs(token);
+    expect(waitMs).toBeLessThanOrEqual(31_000);
+    expect(waitMs).toBeGreaterThan(0);
+  });
+});
+
+describe("extractRetryAfter", () => {
+  it("extracts retry_after from Telegram response", () => {
+    const body = JSON.stringify({ parameters: { retry_after: 120 } });
+    expect(extractRetryAfter(body)).toBe(120);
+  });
+
+  it("defaults to 30 on missing field", () => {
+    expect(extractRetryAfter("{}")).toBe(30);
+  });
+
+  it("defaults to 30 on invalid JSON", () => {
+    expect(extractRetryAfter("not json")).toBe(30);
   });
 });
 

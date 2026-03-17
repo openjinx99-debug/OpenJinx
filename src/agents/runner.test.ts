@@ -273,17 +273,18 @@ describe("runAgent – loadHistory behavior", () => {
     expect(history).toEqual([]);
   });
 
-  it("normal user/assistant alternation → preserved as-is", async () => {
+  it("normal user/assistant alternation → trailing user stripped", async () => {
     const history = await setupAndRunAgent([
       { role: "user", text: "hello", timestamp: 1 },
       { role: "assistant", text: "hi there", timestamp: 2 },
       { role: "user", text: "how are you?", timestamp: 3 },
     ]);
 
+    // Trailing user messages are stripped (unanswered turns from failed API calls).
+    // The current user prompt will be appended by the provider, not loaded from history.
     expect(history).toEqual([
       { role: "user", content: "hello" },
-      { role: "assistant", content: "hi there" },
-      { role: "user", content: "how are you?" },
+      { role: "assistant", content: [{ type: "text", text: "hi there" }] },
     ]);
   });
 
@@ -345,11 +346,45 @@ describe("runAgent – loadHistory behavior", () => {
 
     // Should not contain the first 10 turns (only last 200)
     // Verify the first dropped turn (index 0) is absent and a kept turn is present
-    // Use exact match with word boundaries to avoid "msg-0" matching "msg-100"
-    const allContent = history.map((h) => h.content).join("|");
+    // Extract text from both string content (user) and ContentBlock[] (assistant)
+    const allContent = history
+      .map((h) =>
+        typeof h.content === "string"
+          ? h.content
+          : (h.content as Array<{ text?: string }>).map((b) => b.text ?? "").join(""),
+      )
+      .join("|");
     expect(allContent.split("|")).not.toContainEqual("msg-0");
     expect(allContent.split("|")).not.toContainEqual("msg-5");
     expect(allContent).toContain("msg-209");
+  });
+
+  it("trailing user messages → stripped (unanswered turns from failed API calls)", async () => {
+    const history = await setupAndRunAgent([
+      { role: "user", text: "hello", timestamp: 1 },
+      { role: "assistant", text: "hi", timestamp: 2 },
+      { role: "user", text: "unanswered 1", timestamp: 3 },
+      { role: "user", text: "unanswered 2", timestamp: 4 },
+    ]);
+
+    // Trailing user messages should be stripped — only the answered pair remains
+    expect(history).toHaveLength(2);
+    expect(history[0].role).toBe("user");
+    expect(history[1].role).toBe("assistant");
+  });
+
+  it("assistant content is ContentBlockParam[] (not string) for thinking compatibility", async () => {
+    const history = await setupAndRunAgent([
+      { role: "user", text: "hello", timestamp: 1 },
+      { role: "assistant", text: "response text", timestamp: 2 },
+    ]);
+
+    // User content stays as string
+    expect(typeof history[0].content).toBe("string");
+    // Assistant content must be ContentBlock[] array for thinking-enabled API calls
+    expect(Array.isArray(history[1].content)).toBe(true);
+    const blocks = history[1].content as Array<{ type: string; text: string }>;
+    expect(blocks).toEqual([{ type: "text", text: "response text" }]);
   });
 });
 
